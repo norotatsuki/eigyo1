@@ -6,6 +6,7 @@
  */
 import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
+import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import { extractFromHtml, type Extracted } from './extract.ts';
 
 const USER_AGENT = 'eigyo1-site-collector/0.1 (internal sales list builder)';
@@ -237,6 +238,13 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
     options.onProgress?.(result.visited, result.matched);
     await sleep(delayMs);
+  }
+
+  // 付加情報を書き換えたので、画面の選択肢の控えを作り直しておく。
+  // 捨てるだけにすると、次に画面を開いた人が 40 秒待たされる。
+  if (result.matched > 0) {
+    invalidateMeta(db);
+    loadMeta(db);
   }
 
   return result;
