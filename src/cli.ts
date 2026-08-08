@@ -15,7 +15,7 @@ import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
 import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
-import { crawlPendingHosts } from './enrich/site/crawl.ts';
+import { crawlPendingHosts, rematchHosts } from './enrich/site/crawl.ts';
 import { applyGate, recordOutreach, CHANNEL_POLICY, type Channel } from './outreach/gate.ts';
 import {
   addSuppressions, countSuppressions, removeSuppression, summarizeOutreach,
@@ -50,6 +50,8 @@ const USAGE = `
   discover ホスト名を集める (Common Crawl の公開索引。トークン不要)
     --pages <数>           取得するページ数 (既定 10 / 全体で 1153 ページ)
     --collection <版>      索引の版 (既定 CC-MAIN-2025-05)
+
+  rematch  収集済みのデータだけで突き合わせをやり直す (サイトは訪ねない)
 
   crawl    集めたホストを訪ねて接触先を取り出し、法人番号に突き合わせる
     --limit <数>           訪ねる件数 (既定 50)
@@ -313,6 +315,16 @@ async function cmdDiscover(db: Db, v: Values): Promise<void> {
   );
 }
 
+function cmdRematch(db: Db): void {
+  console.error('[再照合] 収集済みのデータで突き合わせをやり直します (サイトは訪ねません)');
+  const started = Date.now();
+  const r = rematchHosts(db);
+  console.log(`走査 ${fmt(r.scanned)} 件 / 紐付き ${fmt(r.matched)} 件 / 変わった ${fmt(r.changed)} 件 — ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
+  for (const [m, n] of Object.entries(r.byMethod).sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${m.padEnd(16, ' ')} ${fmt(n).padStart(8)}`);
+  }
+}
+
 async function cmdCrawl(db: Db, v: Values): Promise<void> {
   const limit = num(v.limit) ?? 50;
   const delayMs = num(v.delay) ?? 1500;
@@ -572,6 +584,9 @@ async function main(): Promise<void> {
         break;
       case 'discover':
         await cmdDiscover(db, v);
+        break;
+      case 'rematch':
+        cmdRematch(db);
         break;
       case 'crawl':
         await cmdCrawl(db, v);

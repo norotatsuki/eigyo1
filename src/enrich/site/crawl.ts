@@ -163,6 +163,81 @@ export function matchCorporation(
   return null;
 }
 
+export interface RematchResult {
+  scanned: number;
+  matched: number;
+  changed: number;
+  byMethod: Record<string, number>;
+}
+
+/**
+ * 収集済みのデータだけで突き合わせをやり直す。
+ *
+ * 照合の仕方を改善するたびにサイトを訪ね直すのは相手に失礼で、時間もかかる。
+ * 取ってある会社名と住所は変わらないのだから、手元で計算し直せば足りる。
+ */
+export function rematchHosts(db: Db): RematchResult {
+  const rows = db
+    .prepare(
+      `SELECT host, site_name, site_address, site_tel, contact_url, refused_text,
+              corporate_number AS current, match_method AS currentMethod
+         FROM web_hosts WHERE crawl_status = 'ok' AND site_name IS NOT NULL`,
+    )
+    .all() as Array<{
+    host: string; site_name: string; site_address: string | null; site_tel: string | null;
+    contact_url: string | null; refused_text: string | null;
+    current: string | null; currentMethod: string | null;
+  }>;
+
+  const update = db.prepare(
+    'UPDATE web_hosts SET corporate_number = ?, match_confidence = ?, match_method = ? WHERE host = ?',
+  );
+  const upsertProfile = db.prepare(
+    `INSERT INTO company_profiles
+       (corporate_number, website_url, website_confidence, website_checked_at,
+        contact_form_url, contact_tel, solicitation_refused, refused_evidence, updated_at)
+     VALUES (@n, @url, @conf, @at, @form, @tel, @refused, @evidence, @at)
+     ON CONFLICT(corporate_number) DO UPDATE SET
+       website_url = excluded.website_url,
+       website_confidence = excluded.website_confidence,
+       contact_form_url = COALESCE(excluded.contact_form_url, company_profiles.contact_form_url),
+       contact_tel = COALESCE(excluded.contact_tel, company_profiles.contact_tel),
+       solicitation_refused = MAX(excluded.solicitation_refused, company_profiles.solicitation_refused),
+       refused_evidence = COALESCE(excluded.refused_evidence, company_profiles.refused_evidence),
+       updated_at = excluded.updated_at`,
+  );
+
+  const result: RematchResult = { scanned: 0, matched: 0, changed: 0, byMethod: {} };
+  const now = new Date().toISOString();
+
+  const run = db.transaction(() => {
+    for (const r of rows) {
+      result.scanned++;
+      const m = matchCorporation(db, {
+        name: r.site_name, address: r.site_address, tel: r.site_tel,
+        contactUrl: r.contact_url, refusedText: r.refused_text,
+      });
+      if (!m) continue;
+      result.matched++;
+      result.byMethod[m.method] = (result.byMethod[m.method] ?? 0) + 1;
+      if (m.corporateNumber !== r.current || m.method !== r.currentMethod) result.changed++;
+
+      update.run(m.corporateNumber, m.confidence, m.method, r.host);
+      upsertProfile.run({
+        n: m.corporateNumber, url: `https://${r.host}`, conf: m.confidence, at: now,
+        form: r.contact_url, tel: r.site_tel,
+        refused: r.refused_text ? 1 : 0,
+        evidence: r.refused_text ? `https://${r.host}: ${r.refused_text}` : null,
+      });
+    }
+  });
+  run();
+
+  invalidateMeta(db);
+  loadMeta(db);
+  return result;
+}
+
 /** 収集していない先を 1 件ずつ訪ねる。 */
 export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Promise<CrawlResult> {
   const limit = options.limit ?? 50;
