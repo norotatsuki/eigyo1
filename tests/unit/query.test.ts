@@ -175,6 +175,44 @@ describe('絞り込み検索', () => {
       ).toMatch(DRIVEN_BY_FTS);
     });
 
+    // 全件の件数取得が 16.5 秒かかっていた。付加情報を条件に使っていないのに
+    // 500 万行へ結合を張っていたのが原因
+    it('付加情報を条件に使わない件数取得では結合を張らない', () => {
+      const plan = db
+        .prepare(`EXPLAIN QUERY PLAN SELECT COUNT(*) FROM corporations c WHERE c.is_active = 1`)
+        .all() as Array<{ detail: string }>;
+      expect(plan.length).toBeGreaterThan(0);
+      // 件数だけを数えるとき company_profiles は結合されない
+      expect(countCompanies(db, {})).toBe(3);
+      expect(countCompanies(db, { excludeRefused: false })).toBe(4);
+    });
+
+    it('付加情報を条件に使う件数取得では結果が変わらない', () => {
+      // 結合の有無で件数がずれないこと
+      expect(countCompanies(db, { industryCodes: ['39', '09'] })).toBe(2);
+      expect(countCompanies(db, { prefCodes: ['13'] })).toBe(2);
+    });
+
+    // 件数は「全体 − お断り」の引き算で求める経路がある。
+    // 素直に数えた場合と必ず一致しなければならない
+    it('引き算で求めた件数が素直に数えた件数と一致する', () => {
+      const naive = (f: Parameters<typeof countCompanies>[1]): number => {
+        const rows = searchCompanies(db, { ...f, excludeRefused: false }, { limit: 1000 });
+        const refused = new Set(
+          (db.prepare('SELECT corporate_number AS n FROM company_profiles WHERE solicitation_refused = 1')
+            .all() as Array<{ n: string }>).map((r) => r.n),
+        );
+        return rows.filter((r) => !refused.has(r.corporate_number)).length;
+      };
+      for (const f of [{}, { prefCodes: ['13'] }, { kinds: [301] }, { keyword: 'サンプル' }]) {
+        expect(countCompanies(db, f)).toBe(naive(f));
+      }
+    });
+
+    it('お断りを含める指定なら引き算を使わない', () => {
+      expect(countCompanies(db, { excludeRefused: false })).toBe(4);
+    });
+
     it('語が無いときは全文検索表を読まない', () => {
       const built = buildSelectSql({ prefCodes: ['13'] }, {}, 'c.corporate_number');
       expect(built.sql).not.toContain('corporations_fts');

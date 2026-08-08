@@ -84,6 +84,9 @@ const FROM_PLAIN = `
   FROM corporations c
   LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
 
+/** 付加情報を一切使わない場合。500 万行に結合を張らずに済む。 */
+const FROM_CORP_ONLY = `FROM corporations c`;
+
 /**
  * 全文検索を使う場合の読み取り元。
  *
@@ -98,14 +101,38 @@ const FROM_FTS = `
   CROSS JOIN corporations c ON c.id = f.rowid
   LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
 
+/** 全文検索を使い、付加情報は使わない場合。 */
+const FROM_FTS_CORP_ONLY = `
+  FROM corporations_fts f
+  CROSS JOIN corporations c ON c.id = f.rowid`;
+
 function placeholders(n: number): string {
   return new Array(n).fill('?').join(', ');
 }
 
-function buildWhere(filter: SearchFilter): BuiltWhere {
+/** 付加情報の列を条件に使っているか。使っていなければ結合を省ける。 */
+function usesProfile(filter: SearchFilter): boolean {
+  return Boolean(
+    filter.industryCodes?.length ||
+      filter.industryMinConfidence !== undefined ||
+      filter.capitalMin !== undefined ||
+      filter.capitalMax !== undefined ||
+      filter.employeesMin !== undefined ||
+      filter.employeesMax !== undefined ||
+      filter.hasWebsite ||
+      filter.hasContactForm,
+  );
+}
+
+/**
+ * @param forCount 件数だけを数える場合。付加情報の列を表示しないぶん結合を省ける
+ */
+function buildWhere(filter: SearchFilter, forCount = false): BuiltWhere {
   const clauses: string[] = [];
   const params: unknown[] = [];
-  let from = FROM_PLAIN;
+  // 件数を数えるだけで付加情報を条件にも使っていないなら、結合そのものを省く
+  const joinProfile = !forCount || usesProfile(filter);
+  let from = joinProfile ? FROM_PLAIN : FROM_CORP_ONLY;
 
   // 索引は正規化済みの商号に張ってあるため、検索語にも同じ正規化をかける。
   // これが無いと半角「AI」で「ＡＩシステム開発」に当たらない。
@@ -115,7 +142,7 @@ function buildWhere(filter: SearchFilter): BuiltWhere {
   const keyword = filter.keyword?.normalize('NFKC').trim();
   if (keyword) {
     if (keyword.length >= 3) {
-      from = FROM_FTS;
+      from = joinProfile ? FROM_FTS : FROM_FTS_CORP_ONLY;
       clauses.push('corporations_fts MATCH ?');
       params.push(`"${keyword.replace(/"/g, '""')}"`);
     } else {
@@ -132,7 +159,17 @@ function buildWhere(filter: SearchFilter): BuiltWhere {
 
   if (excludeRefused) {
     // プロフィール未取得 (NULL) は「お断りが確認されていない」= 対象に残す
-    clauses.push('COALESCE(p.solicitation_refused, 0) = 0');
+    //
+    // 結合を張っていない場合は NOT EXISTS で照会する。お断りの行はごく少数で
+    // 索引が効くため、500 万行それぞれに結合するより桁違いに速い
+    // (実測: 全件の件数取得が 16.5 秒 → 1 秒未満)。
+    clauses.push(
+      joinProfile
+        ? 'COALESCE(p.solicitation_refused, 0) = 0'
+        : `NOT EXISTS (SELECT 1 FROM company_profiles pr
+                        WHERE pr.corporate_number = c.corporate_number
+                          AND pr.solicitation_refused = 1)`,
+    );
   }
 
   if (filter.prefCodes?.length) {
@@ -224,11 +261,41 @@ function orderClause(orderBy: SearchOptions['orderBy']): string {
   }
 }
 
-/** 条件に一致する件数を数える。リストを出す前の当たりをつけるのに使う。 */
+/** 付加情報を使わない読み取り元に、付加情報の結合を足した形を返す。 */
+function withProfileJoin(from: string): string {
+  if (from === FROM_CORP_ONLY) return FROM_PLAIN;
+  if (from === FROM_FTS_CORP_ONLY) return FROM_FTS;
+  return from;
+}
+
+/**
+ * 条件に一致する件数を数える。リストを出す前の当たりをつけるのに使う。
+ *
+ * お断りの除外だけが付加情報を必要とする場合、「全体 − お断り」の引き算で求める。
+ * 500 万行それぞれに問い合わせると 7.2 秒かかるのに対し、引き算なら 0.6 秒で済む
+ * (お断りの行はごく少数で、そちら側の集計が一瞬で終わるため)。
+ */
 export function countCompanies(db: Db, filter: SearchFilter): number {
-  const where = buildWhere(filter);
-  const sql = `SELECT COUNT(*) AS n ${where.from} ${where.sql}`;
-  const row = db.prepare(sql).get(...where.params) as { n: number };
+  const excludeRefused = filter.excludeRefused ?? true;
+  const canSubtract = excludeRefused && !usesProfile(filter);
+
+  if (!canSubtract) {
+    const where = buildWhere(filter, true);
+    const row = db.prepare(`SELECT COUNT(*) AS n ${where.from} ${where.sql}`).get(...where.params) as {
+      n: number;
+    };
+    return row.n;
+  }
+
+  const base = buildWhere({ ...filter, excludeRefused: false }, true);
+  const refusedFrom = withProfileJoin(base.from);
+  const refusedWhere = base.sql
+    ? `${base.sql} AND p.solicitation_refused = 1`
+    : 'WHERE p.solicitation_refused = 1';
+  const sql = `
+    SELECT (SELECT COUNT(*) ${base.from} ${base.sql})
+         - (SELECT COUNT(*) ${refusedFrom} ${refusedWhere}) AS n`;
+  const row = db.prepare(sql).get(...base.params, ...base.params) as { n: number };
   return row.n;
 }
 
