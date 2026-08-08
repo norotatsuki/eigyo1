@@ -1,0 +1,45 @@
+# jargon-completion-patterns.txt — plain-japanese-guard v1.1.0
+#
+# 応答文中に以下のいずれかにマッチする pattern が検出された場合、
+# jargon-detect.sh (Stop hook) は BLOCK を skip し warn に自動 downgrade する。
+# (作業完了直前の報告で BLOCK loop が発生する事故を回避)
+#
+# 形式: 1 行 1 pattern (python re.IGNORECASE で評価)
+# コメント: 行頭 `#`, 空行は無視
+# escape: bash / python の regex 特殊文字は \ でエスケープ
+#
+# 既定 pattern (jargon-detect.sh 内蔵) に **追加** される。
+# 既定 pattern には以下が含まれる:
+#   - `## 完了報告` / `# 完了` / `### 完成` 等の見出し
+#   - 「完了報告」「完了しました」「実装完了」「作業完了」「タスク完了」
+#   - 「以上で完了」「以上」単独行
+#   - `[100%]` / `100% 完了`
+#   - `完成いたしました` / `完遂しました`
+#   - `✅ 完了` / `✅ 全て` / `✅ 全 test`
+#   - `All tests pass(ed|ing)` / `All done` / `complete(d)?`
+#   - `N/N tests PASS`
+#
+# 本ファイルはユーザーが project 固有の完了 pattern を追加するために使用する。
+# 未編集時は既定 pattern のみが有効。
+#
+# ------------------------------------------------------------------------
+# 例: project 固有の完了 pattern (アンコメントして有効化)
+# ------------------------------------------------------------------------
+
+# 出荷完了
+# デプロイ完了
+# リリース完了
+# マージ完了
+# 統合完了
+# 検証完了
+# レポート完了
+
+# 特定 pattern (verdict 系)
+# SPEC-PASS
+# SEQUENCE-PASS
+# CONTRACT-PASS
+# UI-PASS
+
+# 特定 emoji で始まる完了マーカー
+# ^🎯.*完了
+# ^🚀.*リリース

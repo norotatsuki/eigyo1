@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CC AGI インストーラー v20260712</title>
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="app" id="app">
+    <header class="brand">
+      <img class="brand__logo" src="/static/logo.svg" alt="Customer Cloud">
+      <div class="brand__text">
+        <div class="brand__name">Customer Cloud</div>
+        <h1 class="brand__title">CC AGI インストーラー</h1>
+        <div class="brand__version" id="version-badge">v20260712</div>
+      </div>
+    </header>
+
+    <!-- Screen 1: menu -->
+    <section class="screen" id="screen-menu" aria-labelledby="menu-heading">
+      <h2 id="menu-heading" class="screen__heading">操作を選択してください</h2>
+      <div class="menu">
+        <button type="button" class="menu-card" data-action="open-install">
+          <span class="menu-card__num">1</span>
+          <span class="menu-card__body">
+            <span class="menu-card__title">CC AGI をインストール</span>
+            <span class="menu-card__desc">ライセンスキーとメールアドレスで <code>install_packages/install.sh</code> を実行します。</span>
+          </span>
+        </button>
+        <button type="button" class="menu-card" data-action="open-project">
+          <span class="menu-card__num">2</span>
+          <span class="menu-card__body">
+            <span class="menu-card__title">CC AGI プロジェクトを作成</span>
+            <span class="menu-card__desc">プロジェクト名を入力して <code>./install_packages/scripts/ccagi-bootstrap.sh</code> を実行します。</span>
+          </span>
+        </button>
+      </div>
+      <p class="cwd-note">実行ディレクトリ: <code id="cwd-note">-</code></p>
+    </section>
+
+    <!-- Screen 2: install form -->
+    <section class="screen" id="screen-install" hidden aria-labelledby="install-heading">
+      <button type="button" class="back-link" data-action="back">← 戻る</button>
+      <h2 id="install-heading" class="screen__heading">CC AGI をインストール</h2>
+      <form class="form" id="install-form" autocomplete="off">
+        <div class="field">
+          <label for="license-key">ライセンスキー</label>
+          <input id="license-key" name="license_key" type="text" required
+                 spellcheck="false" autocomplete="off"
+                 placeholder="CCAGI-XXXX-XXXX">
+        </div>
+        <div class="field">
+          <label for="email">メールアドレス</label>
+          <input id="email" name="email" type="email" required
+                 spellcheck="false" autocomplete="off"
+                 placeholder="you@example.com">
+        </div>
+        <div class="form__actions">
+          <button type="submit" class="btn btn--primary">インストール</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Screen 2b: project name -->
+    <section class="screen" id="screen-project" hidden aria-labelledby="project-heading">
+      <button type="button" class="back-link" data-action="back">← 戻る</button>
+      <h2 id="project-heading" class="screen__heading">CC AGI プロジェクトを作成</h2>
+      <form class="form" id="project-form" autocomplete="off">
+        <div class="field">
+          <label for="project-name">プロジェクト名 (半角英数字, - _)</label>
+          <input id="project-name" name="project_name" type="text" required
+                 spellcheck="false" autocomplete="off"
+                 pattern="[A-Za-z0-9_-]+"
+                 title="半角英数字・ハイフン(-)・アンダースコア(_)のみ使用できます"
+                 placeholder="my-project">
+          <span class="field__hint">
+            現在のディレクトリ <code id="project-cwd">-</code> の名前をこの名前に変更し、その中で
+            <code>./install_packages/scripts/ccagi-bootstrap.sh --no-exec</code> を実行します。
+          </span>
+        </div>
+        <div class="form__actions">
+          <button type="submit" class="btn btn--primary">OK</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Screen 3: run log -->
+    <section class="screen" id="screen-run" hidden aria-labelledby="run-heading">
+      <button type="button" class="back-link" data-action="back">← 戻る</button>
+      <h2 id="run-heading" class="screen__heading">実行中: <span id="run-kind">-</span></h2>
+      <div class="status-row">
+        <span class="status-badge" id="run-status">starting</span>
+        <span class="run-meta">run_id: <code id="run-id">-</code></span>
+      </div>
+      <pre class="log" id="run-log" tabindex="0">起動を待機しています…</pre>
+    </section>
+
+    <footer class="footer">
+      <span>Customer Cloud — CC AGI Installer</span>
+      <span id="footer-cwd" class="footer__cwd"></span>
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

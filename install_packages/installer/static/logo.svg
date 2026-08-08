@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Customer Cloud">
+  <defs>
+    <clipPath id="cc-left">
+      <rect x="0" y="0" width="50" height="100"/>
+    </clipPath>
+    <clipPath id="cc-right">
+      <rect x="50" y="0" width="50" height="100"/>
+    </clipPath>
+  </defs>
+  <circle cx="50" cy="50" r="50" fill="#000000" clip-path="url(#cc-left)"/>
+  <circle cx="50" cy="50" r="50" fill="#666666" clip-path="url(#cc-right)"/>
+  <circle cx="50" cy="50" r="25" fill="#FFFFFF"/>
+</svg>

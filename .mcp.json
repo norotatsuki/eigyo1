@@ -1,0 +1,41 @@
+{
+  "mcpServers": {
+    "cc-rag": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/Users/norotatsuki/.ccagi/bin/cc-rag",
+      "env": {
+        "HOME": "/Users/norotatsuki"
+      }
+    },
+    "ccagi-tools": {
+      "args": [],
+      "command": "/Users/norotatsuki/.ccagi/bin/ccagi-tools-server",
+      "env": {
+        "HOME": "/Users/norotatsuki"
+      }
+    },
+    "irondome-code-mcp": {
+      "args": [],
+      "command": "/Users/norotatsuki/.ccagi/bin/irondome-code-mcp",
+      "env": {
+        "HOME": "/Users/norotatsuki"
+      }
+    },
+    "pil-mcp": {
+      "args": [],
+      "command": "/Users/norotatsuki/.ccagi/bin/pil-mcp",
+      "env": {
+        "HOME": "/Users/norotatsuki"
+      }
+    },
+    "threejs-mcp": {
+      "args": [],
+      "command": "/Users/norotatsuki/.ccagi/bin/threejs-mcp",
+      "env": {
+        "HOME": "/Users/norotatsuki"
+      }
+    }
+  }
+}

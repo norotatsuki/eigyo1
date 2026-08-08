@@ -1,0 +1,74 @@
+#!/usr/bin/env expect -f
+# ccagi-sdk init を対話プロンプトに自動で Yes 応答するラッパー
+# request.md #2 用途
+#
+# 使い方: expect scripts/lib/ccagi-init-auto.exp
+# 環境変数:
+#   CCAGI_INIT_TIMEOUT_SEC - プロンプト待ちタイムアウト秒 (default: 120)
+
+if {[info exists env(CCAGI_INIT_TIMEOUT_SEC)] && [string length $env(CCAGI_INIT_TIMEOUT_SEC)] > 0} {
+    set timeout $env(CCAGI_INIT_TIMEOUT_SEC)
+} else {
+    set timeout 120
+}
+
+log_user 1
+spawn ccagi-sdk init
+
+# 応答戦略:
+#   1. パスワード/シークレット系 → 自動応答しない (手動対応)
+#   2. Yes/No 系 (bracket 形式) → "y" + Enter
+#   3. inquirer 系のテキスト/セレクトプロンプト (末尾 "›" or "»") → Enter でデフォルト採用
+#   4. "Press any key" 系 → Enter
+#   5. 末尾 "?" のオープン質問 → "y"
+#
+# 注意点:
+#   * ccagi-sdk は inquirer 系プロンプトを使い、末尾に "›" (U+203A) を出す。
+#     ANSI カラーコードが (default) と "›" の間に挟まるので、単純な "$" アンカーは効かない。
+#     "›" 自体を直接検出する。
+#   * "›" は情報出力にも稀に現れるが、それが cursor 手前に来るのは prompt のみなので
+#     Enter を送っても副作用はない (default 採用 / highlighted option 採用)。
+
+expect {
+    -re {(?i)(password|passphrase|secret|api[-_ ]?key)\s*:} {
+        puts stderr "\n\[ccagi-init-auto\] Password/secret prompt detected. Manual input required."
+        interact
+        exit 0
+    }
+    -re {(?i)\[y/n\]|\(y/n\)|\[n/y\]|\(n/y\)|Yes/No|Y or N|はい/いいえ} {
+        # Y/n の大文字小文字問わず、default が y か n かも問わず、全部 y で応答
+        # (bootstrap は "対話プロンプトは自動 Yes" が仕様)
+        send -- "y\r"
+        exp_continue
+    }
+    -re {(?i)\(yes/no\)|\(no/yes\)} {
+        send -- "yes\r"
+        exp_continue
+    }
+    -re {›} {
+        # inquirer text / select prompt → Enter で default / highlighted を採用
+        send -- "\r"
+        exp_continue
+    }
+    -re {»} {
+        send -- "\r"
+        exp_continue
+    }
+    -re {(?i)press (any key|enter|return)} {
+        send -- "\r"
+        exp_continue
+    }
+    -re {\?\s*$} {
+        send -- "y\r"
+        exp_continue
+    }
+    timeout {
+        puts stderr "\n\[ccagi-init-auto\] Timeout waiting for prompt. Continuing."
+        exit 1
+    }
+    eof {
+        catch wait result
+        set status [lindex $result 3]
+        exit $status
+    }
+}

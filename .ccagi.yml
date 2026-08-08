@@ -1,0 +1,131 @@
+# CCAGI Configuration v1.0
+# Customer Cloud AGI
+
+# プロジェクト名（init時に自動設定）
+project_name: "eigyo1"
+version: "1.0.0"
+description: "eigyo1 - CCAGI SDKプロジェクト"
+
+# ========================================
+# GitHub設定
+# ========================================
+github:
+  repository: "eigyo1"
+  owner: "norotatsuki"
+  default_branch: "main"
+  auto_label: true
+  auto_assign: true
+  draft_pr: true
+
+# ========================================
+# プロジェクト構造
+# ========================================
+project:
+  language: "TypeScript"      # single-language projects (still supported)
+  # languages: ["Zig", "Swift"]  # polyglot projects (opt-in; preferred over `language` if set) — #4221
+  framework: "Node.js"
+  testing: "Vitest"
+  package_manager: "npm"
+
+  directories:
+    src: "./src"
+    docs: "./docs"
+
+# ========================================
+# エージェント設定
+# ========================================
+agents:
+  enabled: true
+  use_worktree: true
+  worktree_base_path: ".worktrees"
+
+  # 並列タスク数（init時にマシンスペックから自動設定。手動調整可）
+  coordinator_agent:
+    enabled: true
+    dag_based: true
+    parallel_execution: true
+    max_parallel_tasks: 8
+
+# ========================================
+# ログ・レポート
+# ========================================
+logging:
+  level: "info"
+  directory: "./logs"
+  format: "json"
+
+# ========================================
+# 高度な設定
+# ========================================
+advanced:
+  parallel_processing:
+    enabled: true
+    max_workers: 3
+
+  cache:
+    enabled: true
+    directory: "./.ccagi-cache"
+    ttl: "24h"
+
+  retry:
+    max_attempts: 3
+    backoff: "exponential"
+    initial_delay: "5s"
+
+  timeout:
+    code_generation: "30m"
+    testing: "20m"
+    security_scan: "15m"
+    review: "10m"
+
+# ========================================
+# フィードバック管理設定
+# ========================================
+feedback:
+  status_values:
+    - pending
+    - in_progress
+    - applied
+    - closed
+
+  source_of_truth: "ssot_issue"
+
+  sync:
+    enabled: true
+    direction: "bidirectional"
+    auto_normalize: true
+
+  local:
+    directory: ".ai/feedback"
+    file_pattern: "*.md"
+
+# ========================================
+# MCP Bundle設定
+# ========================================
+mcp_bundles:
+  # チャンネル: stable | preview | beta | nightly
+  channel: stable
+  # 自動更新（upgrade時にバンドルも自動フェッチ）
+  auto_update: true
+
+# ========================================
+# CCAGI SDK バージョン（init時に自動設定）
+# ========================================
+sdk:
+  version: "4.22.35"
+
+# ========================================
+# AI Runtime Layer（任意・コメントアウトで無効）
+# ========================================
+# `.ccagi.yml` に `ai_runtime:` を追加すると、LLM 推論・実行に使う AI エンジン /
+# モデルを設定できます（未設定時は既定モデルで動作）。
+# 利用可能エンジン: claude-cli, claude-api, ollama-api, codex-cli, gemini-cli, qwen-cli
+#
+# ai_runtime:
+#   defaults:
+#     llm: { engine: claude-api, model: claude-sonnet-4-20250514 }
+
+# SSOT Issue (Single Source of Truth)
+ssot:
+  issue_number: 1
+  issue_url: "https://github.com/norotatsuki/eigyo1/issues/1"
