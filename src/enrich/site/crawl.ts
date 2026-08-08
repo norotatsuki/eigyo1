@@ -179,13 +179,13 @@ export interface RematchResult {
 export function rematchHosts(db: Db): RematchResult {
   const rows = db
     .prepare(
-      `SELECT host, site_name, site_address, site_tel, contact_url, refused_text,
+      `SELECT host, site_name, site_address, site_tel, site_email, contact_url, refused_text,
               corporate_number AS current, match_method AS currentMethod
          FROM web_hosts WHERE crawl_status = 'ok' AND site_name IS NOT NULL`,
     )
     .all() as Array<{
     host: string; site_name: string; site_address: string | null; site_tel: string | null;
-    contact_url: string | null; refused_text: string | null;
+    site_email: string | null; contact_url: string | null; refused_text: string | null;
     current: string | null; currentMethod: string | null;
   }>;
 
@@ -195,12 +195,13 @@ export function rematchHosts(db: Db): RematchResult {
   const upsertProfile = db.prepare(
     `INSERT INTO company_profiles
        (corporate_number, website_url, website_confidence, website_checked_at,
-        contact_form_url, contact_tel, solicitation_refused, refused_evidence, updated_at)
-     VALUES (@n, @url, @conf, @at, @form, @tel, @refused, @evidence, @at)
+        contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence, updated_at)
+     VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence, @at)
      ON CONFLICT(corporate_number) DO UPDATE SET
        website_url = excluded.website_url,
        website_confidence = excluded.website_confidence,
        contact_form_url = COALESCE(excluded.contact_form_url, company_profiles.contact_form_url),
+       contact_email = COALESCE(excluded.contact_email, company_profiles.contact_email),
        contact_tel = COALESCE(excluded.contact_tel, company_profiles.contact_tel),
        solicitation_refused = MAX(excluded.solicitation_refused, company_profiles.solicitation_refused),
        refused_evidence = COALESCE(excluded.refused_evidence, company_profiles.refused_evidence),
@@ -214,7 +215,7 @@ export function rematchHosts(db: Db): RematchResult {
     for (const r of rows) {
       result.scanned++;
       const m = matchCorporation(db, {
-        name: r.site_name, address: r.site_address, tel: r.site_tel,
+        name: r.site_name, address: r.site_address, tel: r.site_tel, email: r.site_email,
         contactUrl: r.contact_url, refusedText: r.refused_text,
       });
       if (!m) continue;
@@ -225,7 +226,7 @@ export function rematchHosts(db: Db): RematchResult {
       update.run(m.corporateNumber, m.confidence, m.method, r.host);
       upsertProfile.run({
         n: m.corporateNumber, url: `https://${r.host}`, conf: m.confidence, at: now,
-        form: r.contact_url, tel: r.site_tel,
+        form: r.contact_url, email: r.site_email, tel: r.site_tel,
         refused: r.refused_text ? 1 : 0,
         evidence: r.refused_text ? `https://${r.host}: ${r.refused_text}` : null,
       });
@@ -249,20 +250,21 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
   const update = db.prepare(
     `UPDATE web_hosts SET crawl_status = ?, crawled_at = ?, http_status = ?, error = ?,
-       site_name = ?, site_address = ?, site_tel = ?, contact_url = ?, refused_text = ?,
+       site_name = ?, site_address = ?, site_tel = ?, site_email = ?, contact_url = ?, refused_text = ?,
        corporate_number = ?, match_confidence = ?, match_method = ?
      WHERE host = ?`,
   );
   const upsertProfile = db.prepare(
     `INSERT INTO company_profiles
        (corporate_number, website_url, website_confidence, website_checked_at,
-        contact_form_url, contact_tel, solicitation_refused, refused_evidence, updated_at)
-     VALUES (@n, @url, @conf, @at, @form, @tel, @refused, @evidence, @at)
+        contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence, updated_at)
+     VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence, @at)
      ON CONFLICT(corporate_number) DO UPDATE SET
        website_url = excluded.website_url,
        website_confidence = excluded.website_confidence,
        website_checked_at = excluded.website_checked_at,
        contact_form_url = COALESCE(excluded.contact_form_url, company_profiles.contact_form_url),
+       contact_email = COALESCE(excluded.contact_email, company_profiles.contact_email),
        contact_tel = COALESCE(excluded.contact_tel, company_profiles.contact_tel),
        solicitation_refused = MAX(excluded.solicitation_refused, company_profiles.solicitation_refused),
        refused_evidence = COALESCE(excluded.refused_evidence, company_profiles.refused_evidence),
@@ -280,7 +282,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
     if (!(await robotsAllows(origin, ['/', ...PROFILE_PATHS]))) {
       result.disallowed++;
-      update.run('disallowed', now, null, 'robots.txt により不可', null, null, null, null, null, null, null, null, host);
+      update.run('disallowed', now, null, 'robots.txt により不可', null, null, null, null, null, null, null, null, null, host);
       await sleep(delayMs);
       continue;
     }
@@ -289,7 +291,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     if (!top || top.body === '') {
       result.failed++;
       update.run('failed', now, top?.status ?? null, top ? 'HTML を取得できません' : '接続できません',
-        null, null, null, null, null, null, null, null, host);
+        null, null, null, null, null, null, null, null, null, host);
       await sleep(delayMs);
       continue;
     }
@@ -306,6 +308,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
           name: info.name ?? more.name,
           address: info.address ?? more.address,
           tel: info.tel ?? more.tel,
+          email: info.email ?? more.email,
           contactUrl: info.contactUrl ?? more.contactUrl,
           refusedText: info.refusedText ?? more.refusedText,
         };
@@ -332,7 +335,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
     update.run(
       'ok', now, top.status, null,
-      info.name, info.address, info.tel, info.contactUrl, info.refusedText,
+      info.name, info.address, info.tel, info.email, info.contactUrl, info.refusedText,
       match?.corporateNumber ?? null, match?.confidence ?? null, match?.method ?? null,
       host,
     );
@@ -344,6 +347,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
         conf: match.confidence,
         at: now,
         form: info.contactUrl,
+        email: info.email,
         tel: info.tel,
         refused: info.refusedText ? 1 : 0,
         evidence: info.refusedText ? `${origin}: ${info.refusedText}` : null,

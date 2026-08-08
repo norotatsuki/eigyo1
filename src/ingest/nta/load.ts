@@ -177,7 +177,11 @@ async function ensureDownloaded(
     return { path, fileName: file.fileName };
   }
 
-  await pipeline(Readable.fromWeb(file.body), createWriteStream(path));
+  // fetch が返すのは DOM 側の ReadableStream。Node 側の型とは別物なので橋渡しする
+  await pipeline(
+    Readable.fromWeb(file.body as unknown as Parameters<typeof Readable.fromWeb>[0]),
+    createWriteStream(path),
+  );
   return { path, fileName: file.fileName };
 }
 

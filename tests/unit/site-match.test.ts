@@ -68,7 +68,7 @@ describe('matchCorporation', () => {
   });
 
   const site = (name: string | null, address: string | null = null) => ({
-    name, address, tel: null, contactUrl: null, refusedText: null,
+    name, address, tel: null, email: null, contactUrl: null, refusedText: null,
   });
 
   it('郵便番号が一致すれば書き方の違いに関わらず特定する', () => {

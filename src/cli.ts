@@ -8,7 +8,7 @@
  *   export  … 条件で絞り込んで CSV に書き出す
  */
 import { parseArgs } from 'node:util';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { openDb, defaultDbPath, type Db } from './db/index.ts';
 import { loadZenken } from './ingest/nta/load.ts';
 import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
@@ -17,6 +17,9 @@ import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
 import { crawlPendingHosts, rematchHosts } from './enrich/site/crawl.ts';
 import { applyGate, recordOutreach, CHANNEL_POLICY, type Channel } from './outreach/gate.ts';
+import { CONFIG_PATH, CONFIG_TEMPLATE, checkChannelReady, loadConfig } from './outreach/config.ts';
+import { runCampaign } from './outreach/campaign.ts';
+import type { Template } from './outreach/template.ts';
 import {
   addSuppressions, countSuppressions, removeSuppression, summarizeOutreach,
   saveSegment, getSegment, listSegments, deleteSegment,
@@ -56,6 +59,17 @@ const USAGE = `
   crawl    集めたホストを訪ねて接触先を取り出し、法人番号に突き合わせる
     --limit <数>           訪ねる件数 (既定 50)
     --delay <ミリ秒>       1 サイトごとの間隔 (既定 1500)
+
+  init-config 送信の設定ファイルのひな形を作る
+  config      設定の状態を見る (足りない項目を挙げる)
+
+  send     施策を走らせる。既定は下見のみ。実送信は --live を明示したときだけ
+    --channel <経路>       form / email / postal / phone
+    --template <パス>      文面のひな形 (JSON)
+    --campaign <名前>      施策名。記録に残る
+    --limit <数>           送る上限
+    --live                 実際に送る (設定が揃っていないと止まる)
+    (絞り込みは search と同じ指定が使えます)
 
   suppress 除外リスト (絶対に接触しない先) を扱う
     --add <法人番号,…>     除外に積む
@@ -116,6 +130,9 @@ const options = {
   pages: { type: 'string' },
   collection: { type: 'string' },
   delay: { type: 'string' },
+  channel: { type: 'string' },
+  template: { type: 'string' },
+  live: { type: 'boolean' },
   add: { type: 'string' },
   remove: { type: 'string' },
   reason: { type: 'string' },
@@ -346,6 +363,74 @@ async function cmdCrawl(db: Db, v: Values): Promise<void> {
   console.log(`  法人番号に紐付いた  ${fmt(r.matched).padStart(6)}`);
   console.log(`  問い合わせ先が判明  ${fmt(r.contactFound).padStart(6)}`);
   console.log(`  営業お断りを検出    ${fmt(r.refusedFound).padStart(6)}`);
+}
+
+function cmdInitConfig(): void {
+  if (existsSync(CONFIG_PATH)) {
+    console.error(`[設定] 既にあります: ${CONFIG_PATH}`);
+    return;
+  }
+  writeFileSync(CONFIG_PATH, JSON.stringify(CONFIG_TEMPLATE, null, 2) + '\n', 'utf8');
+  console.error(`[設定] ひな形を作りました: ${CONFIG_PATH}`);
+  console.error('[設定] identity の 4 項目は特定電子メール法 4 条の要求です。必ず埋めてください');
+}
+
+function cmdConfig(): void {
+  const { config, missing } = loadConfig();
+  if (missing.length > 0) {
+    console.log('足りない項目:');
+    for (const m of missing) console.log(`  - ${m}`);
+  } else {
+    console.log('法定表示: 揃っています');
+  }
+  for (const ch of ['form', 'email'] as const) {
+    const lack = checkChannelReady(config, ch);
+    console.log(lack.length === 0 ? `${ch}: 送れます` : `${ch}: 送れません`);
+    for (const m of lack) console.log(`  - ${m}`);
+  }
+}
+
+async function cmdSend(db: Db, v: Values, base: SearchFilter | null): Promise<void> {
+  const channel = (asString(v.channel) ?? 'form') as Channel;
+  if (!(channel in CHANNEL_POLICY)) throw new Error(`経路の指定が不正です: ${channel}`);
+  const campaign = asString(v.campaign);
+  if (!campaign) throw new Error('--campaign <名前> を指定してください (記録に残ります)');
+
+  const templatePath = asString(v.template);
+  if (!templatePath) throw new Error('--template <パス> を指定してください');
+  const template = JSON.parse(readFileSync(templatePath, 'utf8')) as Template;
+
+  const { config } = loadConfig();
+  const live = v.live === true;
+  console.error(live ? '[送信] 実際に送ります' : '[送信] 下見のみ (実際に送るには --live)');
+
+  const r = await runCampaign(db, toFilter(v, base), channel, template, config, {
+    live, campaign,
+    ...(num(v.limit) !== undefined ? { limit: num(v.limit)! } : {}),
+    evidenceDir: '.send-logs',
+    onProgress: (done, sent) => console.error(`[送信] ${fmt(done)} 件処理 / ${fmt(sent)} 件送信`),
+  });
+
+  if (r.blockers.length > 0) {
+    console.log('実行できません。先に次を直してください:');
+    for (const b of r.blockers) console.log(`  - ${b}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`候補 ${fmt(r.candidates)} 件 / ゲートで除外 ${fmt(r.blockedByGate)} 件`);
+  for (const [reason, n] of Object.entries(r.blockedByReason)) console.log(`    ${reason.padEnd(16, ' ')} ${fmt(n)}`);
+  console.log(`対象 ${fmt(r.attempted)} 件 — 送信 ${fmt(r.sent)} / 見送り ${fmt(r.skipped)} / 失敗 ${fmt(r.failed)}`);
+  for (const [reason, n] of Object.entries(r.skipReasons)) console.log(`    見送り: ${reason} — ${fmt(n)} 件`);
+
+  if (!live && r.preview) {
+    console.log('');
+    console.log('── 1 通目の中身 ──');
+    console.log(`宛先: ${r.preview.to}`);
+    console.log(`件名: ${r.preview.subject}`);
+    console.log('---');
+    console.log(r.preview.body);
+  }
 }
 
 function cmdSuppress(db: Db, v: Values): void {
@@ -590,6 +675,15 @@ async function main(): Promise<void> {
         break;
       case 'crawl':
         await cmdCrawl(db, v);
+        break;
+      case 'init-config':
+        cmdInitConfig();
+        break;
+      case 'config':
+        cmdConfig();
+        break;
+      case 'send':
+        await cmdSend(db, v, base);
         break;
       case 'suppress':
         cmdSuppress(db, v);

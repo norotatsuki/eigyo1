@@ -37,8 +37,39 @@ export interface Extracted {
   name: string | null;
   address: string | null;
   tel: string | null;
+  email: string | null;
   contactUrl: string | null;
   refusedText: string | null;
+}
+
+/**
+ * 公開されているメールアドレスを拾う。
+ *
+ * 特定電子メール法 3条1項4号 は「自己の電子メールアドレスを公表している団体」への
+ * 送信を同意なしで認めている。ここで拾えるのは、まさにその公表アドレスである。
+ *
+ * 画像やサイト運用会社のアドレスを拾わないよう、mailto: を最優先にし、
+ * 明らかに無関係なもの (example / noreply / 拡張子が画像) は落とす。
+ */
+const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+const EMAIL_REJECT = /(example\.|@sentry|noreply|no-reply|donotreply|\.(png|jpe?g|gif|webp|svg|css|js)$)/i;
+
+export function findEmail(html: string, text: string, host?: string): string | null {
+  const candidates: string[] = [];
+  for (const m of html.matchAll(/mailto:([^"'?>\s]+)/gi)) {
+    if (m[1]) candidates.push(decodeURIComponent(m[1]));
+  }
+  candidates.push(...(text.match(EMAIL_RE) ?? []));
+
+  const usable = candidates.map((c) => c.trim()).filter((c) => EMAIL_RE.test(c) && !EMAIL_REJECT.test(c));
+  if (usable.length === 0) return null;
+  // そのサイトのドメインのアドレスがあれば、それが本命
+  if (host) {
+    const bare = host.replace(/^www\./, '');
+    const own = usable.find((c) => c.toLowerCase().endsWith(`@${bare}`) || c.toLowerCase().endsWith(`.${bare}`));
+    if (own) return own;
+  }
+  return usable[0] ?? null;
 }
 
 /** タグを落として本文だけにする。 */
@@ -193,10 +224,18 @@ export function extractFromHtml(html: string, pageUrl: string): Extracted {
   const telCell = fromLabeledCell(html, TEL_LABELS);
   const tel = (telCell ? findTel(telCell) : null) ?? findTel(text);
 
+  let host: string | undefined;
+  try {
+    host = new URL(pageUrl).hostname;
+  } catch {
+    host = undefined;
+  }
+
   return {
     name: name?.trim() || null,
     address: address?.trim() || null,
     tel: tel?.trim() || null,
+    email: findEmail(html, text, host),
     contactUrl: findContactUrl(html, pageUrl),
     refusedText: findRefusal(text),
   };

@@ -18,8 +18,11 @@
     "better-sqlite3": "^11.7.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.2",
+    "@types/nodemailer": "^8.0.1",
+    "nodemailer": "^9.0.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

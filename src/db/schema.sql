@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS web_hosts (
   site_name       TEXT,                  -- サイトが名乗っている会社名
   site_address    TEXT,
   site_tel        TEXT,
+  site_email      TEXT,
   contact_url     TEXT,                  -- 問い合わせページ
   refused_text    TEXT,                  -- 営業お断りの文言 (見つかった場合)
 

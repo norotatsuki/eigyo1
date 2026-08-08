@@ -151,3 +151,5 @@ gitleaks*.log
 
 # 営業リスト基盤: 取り込んだデータと生ファイル (公的データなので再取得できる)
 /data/
+outreach.config.json
+.send-logs/

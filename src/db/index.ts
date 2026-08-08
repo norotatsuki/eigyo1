@@ -22,8 +22,29 @@ export function openDb(path: string = defaultDbPath()): Db {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(readFileSync(join(HERE, 'schema.sql'), 'utf8'));
+  addMissingColumns(db);
   migrateFtsIfStale(db);
   return db;
+}
+
+/**
+ * スキーマに足した列を、既に出来ているデータベースにも反映する。
+ *
+ * schema.sql は CREATE TABLE IF NOT EXISTS で書いてあるため、
+ * 列を足しても既存のデータベースには入らない。取り込み直しを強いないよう、
+ * 足りない列だけを継ぎ足す。
+ */
+const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, decl: string]> = [
+  ['web_hosts', 'site_email', 'TEXT'],
+];
+
+function addMissingColumns(db: Db): void {
+  for (const [table, column, decl] of ADDED_COLUMNS) {
+    const exists = db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info(?) WHERE name = ?`).get(table, column) as
+      | { n: number }
+      | undefined;
+    if (exists && exists.n === 0) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
 }
 
 /**
