@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openDb, rebuildFts, type Db } from '../../src/db/index.ts';
-import { countCompanies, searchCompanies, toCsvLines } from '../../src/search/query.ts';
+import { buildSelectSql, countCompanies, searchCompanies, toCsvLines } from '../../src/search/query.ts';
 import { normalizeCompanyName } from '../../src/normalize/company-name.ts';
 
 interface Seed {
@@ -142,6 +142,43 @@ describe('絞り込み検索', () => {
   it('条件を重ねると積み上げで絞られる', () => {
     expect(countCompanies(db, { prefCodes: ['13'], corpForms: ['株式会社'] })).toBe(1);
     expect(countCompanies(db, { prefCodes: ['13'], corpForms: ['株式会社'], employeesMin: 100 })).toBe(0);
+  });
+
+  // 2026-08-09 の退化: 業種や法人種別を併用すると SQLite が corporations を駆動側に選び、
+  // 250 万行それぞれに全文照合をかけていた (1 件の検索に 64 秒〜返らず)。
+  // 件数の少ないテストでは速度で気づけないため、実行計画そのものを見張る。
+  describe('全文検索の結合順', () => {
+    function firstStep(filter: Parameters<typeof buildSelectSql>[0]): string {
+      const built = buildSelectSql(filter, {}, 'c.corporate_number');
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${built.sql}`).all(...built.params) as Array<{ detail: string }>;
+      return plan[0]?.detail ?? '';
+    }
+
+    // 別名 f が全文検索表。これが第 1 段にあれば全文検索が駆動側になっている
+    const DRIVEN_BY_FTS = /^SCAN f VIRTUAL TABLE/;
+
+    it('語だけのときは全文検索から回す', () => {
+      expect(firstStep({ keyword: 'サンプル' })).toMatch(DRIVEN_BY_FTS);
+    });
+
+    it('法人種別を併用しても全文検索から回す', () => {
+      expect(firstStep({ keyword: 'サンプル', kinds: [301, 302, 303, 304, 305] })).toMatch(DRIVEN_BY_FTS);
+    });
+
+    it('業種を併用しても全文検索から回す', () => {
+      expect(firstStep({ keyword: 'サンプル', industryCodes: ['39'] })).toMatch(DRIVEN_BY_FTS);
+    });
+
+    it('地域と規模を重ねても全文検索から回す', () => {
+      expect(
+        firstStep({ keyword: 'サンプル', prefCodes: ['13'], employeesMin: 10, capitalMin: 1000 }),
+      ).toMatch(DRIVEN_BY_FTS);
+    });
+
+    it('語が無いときは全文検索表を読まない', () => {
+      const built = buildSelectSql({ prefCodes: ['13'] }, {}, 'c.corporate_number');
+      expect(built.sql).not.toContain('corporations_fts');
+    });
   });
 
   it('書き出しは見出し行と本体行を返す', () => {

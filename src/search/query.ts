@@ -73,11 +73,30 @@ const SELECT_COLUMNS = `
 `;
 
 interface BuiltWhere {
+  /** FROM から結合までの一式 */
+  from: string;
   sql: string;
   params: unknown[];
-  /** 全文検索を使う場合の結合句 */
-  join: string;
 }
+
+/** 全文検索を使わない場合の読み取り元。 */
+const FROM_PLAIN = `
+  FROM corporations c
+  LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
+
+/**
+ * 全文検索を使う場合の読み取り元。
+ *
+ * CROSS JOIN で結合順を固定しているのは、SQLite の見積もりが外れるため。
+ * 業種や法人種別の条件があると corporations を駆動側に選び、250 万行それぞれに
+ * 全文照合をかける計画を立ててしまう (実測: 1 件の検索に 64 秒〜返らず)。
+ * CROSS JOIN は SQLite に「この順で回せ」と伝える唯一の手段で、
+ * 同じ検索が 0-1ms に戻る。並べ替えても意味は変わらない。
+ */
+const FROM_FTS = `
+  FROM corporations_fts f
+  CROSS JOIN corporations c ON c.id = f.rowid
+  LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
 
 function placeholders(n: number): string {
   return new Array(n).fill('?').join(', ');
@@ -86,7 +105,25 @@ function placeholders(n: number): string {
 function buildWhere(filter: SearchFilter): BuiltWhere {
   const clauses: string[] = [];
   const params: unknown[] = [];
-  let join = '';
+  let from = FROM_PLAIN;
+
+  // 索引は正規化済みの商号に張ってあるため、検索語にも同じ正規化をかける。
+  // これが無いと半角「AI」で「ＡＩシステム開発」に当たらない。
+  //
+  // 全文検索の条件は必ず先頭に置く。FROM_FTS では MATCH が SQL 文の先頭側に来るため、
+  // 引数の並びもそれに合わせる必要がある。
+  const keyword = filter.keyword?.normalize('NFKC').trim();
+  if (keyword) {
+    if (keyword.length >= 3) {
+      from = FROM_FTS;
+      clauses.push('corporations_fts MATCH ?');
+      params.push(`"${keyword.replace(/"/g, '""')}"`);
+    } else {
+      // trigram は 3 文字未満を扱えないため、正規化名で素直に照合する
+      clauses.push('c.name_normalized LIKE ?');
+      params.push(`%${keyword}%`);
+    }
+  }
 
   const activeOnly = filter.activeOnly ?? true;
   const excludeRefused = filter.excludeRefused ?? true;
@@ -96,22 +133,6 @@ function buildWhere(filter: SearchFilter): BuiltWhere {
   if (excludeRefused) {
     // プロフィール未取得 (NULL) は「お断りが確認されていない」= 対象に残す
     clauses.push('COALESCE(p.solicitation_refused, 0) = 0');
-  }
-
-  // 索引は正規化済みの商号に張ってあるため、検索語にも同じ正規化をかける。
-  // これが無いと半角「AI」で「ＡＩシステム開発」に当たらない。
-  const keyword = filter.keyword?.normalize('NFKC').trim();
-  if (keyword) {
-    if (keyword.length >= 3) {
-      // trigram 索引による部分一致
-      join = 'JOIN corporations_fts f ON f.rowid = c.id';
-      clauses.push('corporations_fts MATCH ?');
-      params.push(`"${keyword.replace(/"/g, '""')}"`);
-    } else {
-      // trigram は 3 文字未満を扱えないため、正規化名で素直に照合する
-      clauses.push('c.name_normalized LIKE ?');
-      params.push(`%${keyword}%`);
-    }
   }
 
   if (filter.prefCodes?.length) {
@@ -170,9 +191,22 @@ function buildWhere(filter: SearchFilter): BuiltWhere {
   if (filter.hasContactForm) clauses.push("p.contact_form_url IS NOT NULL AND p.contact_form_url <> ''");
 
   return {
+    from,
     sql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
     params,
-    join,
+  };
+}
+
+/** 組み立てた読み取り文。実行計画の確認にも使う。 */
+export function buildSelectSql(
+  filter: SearchFilter,
+  options: SearchOptions = {},
+  columns: string = SELECT_COLUMNS,
+): { sql: string; params: unknown[] } {
+  const where = buildWhere(filter);
+  return {
+    sql: `SELECT ${columns} ${where.from} ${where.sql} ${orderClause(options.orderBy)}`,
+    params: where.params,
   };
 }
 
@@ -193,12 +227,7 @@ function orderClause(orderBy: SearchOptions['orderBy']): string {
 /** 条件に一致する件数を数える。リストを出す前の当たりをつけるのに使う。 */
 export function countCompanies(db: Db, filter: SearchFilter): number {
   const where = buildWhere(filter);
-  const sql = `
-    SELECT COUNT(*) AS n
-      FROM corporations c
-      LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number
-      ${where.join}
-      ${where.sql}`;
+  const sql = `SELECT COUNT(*) AS n ${where.from} ${where.sql}`;
   const row = db.prepare(sql).get(...where.params) as { n: number };
   return row.n;
 }
@@ -209,18 +238,10 @@ export function searchCompanies(
   filter: SearchFilter,
   options: SearchOptions = {},
 ): CompanyRow[] {
-  const where = buildWhere(filter);
+  const built = buildSelectSql(filter, options);
   const limit = options.limit ?? 100;
   const offset = options.offset ?? 0;
-  const sql = `
-    SELECT ${SELECT_COLUMNS}
-      FROM corporations c
-      LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number
-      ${where.join}
-      ${where.sql}
-      ${orderClause(options.orderBy)}
-      LIMIT ? OFFSET ?`;
-  return db.prepare(sql).all(...where.params, limit, offset) as CompanyRow[];
+  return db.prepare(`${built.sql} LIMIT ? OFFSET ?`).all(...built.params, limit, offset) as CompanyRow[];
 }
 
 /** 条件に一致する法人を、件数上限なしで順に返す。書き出し用。 */
@@ -229,15 +250,8 @@ export function* streamCompanies(
   filter: SearchFilter,
   options: SearchOptions = {},
 ): Generator<CompanyRow, void, void> {
-  const where = buildWhere(filter);
-  const sql = `
-    SELECT ${SELECT_COLUMNS}
-      FROM corporations c
-      LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number
-      ${where.join}
-      ${where.sql}
-      ${orderClause(options.orderBy)}`;
-  yield* db.prepare(sql).iterate(...where.params) as IterableIterator<CompanyRow>;
+  const built = buildSelectSql(filter, options);
+  yield* db.prepare(built.sql).iterate(...built.params) as IterableIterator<CompanyRow>;
 }
 
 const EXPORT_HEADER = [
