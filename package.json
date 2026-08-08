@@ -8,6 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "start": "node --experimental-strip-types src/cli.ts serve",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "cli": "node --experimental-strip-types src/cli.ts",

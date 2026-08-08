@@ -17,7 +17,7 @@ import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
 import { crawlPendingHosts, rematchHosts } from './enrich/site/crawl.ts';
 import { applyGate, recordOutreach, CHANNEL_POLICY, type Channel } from './outreach/gate.ts';
-import { CONFIG_PATH, CONFIG_TEMPLATE, checkChannelReady, loadConfig } from './outreach/config.ts';
+import { CONFIG_PATH, PRESET_DAILY_CAP, checkChannelReady, configTemplate, loadConfig } from './outreach/config.ts';
 import { runCampaign } from './outreach/campaign.ts';
 import type { Template } from './outreach/template.ts';
 import {
@@ -61,6 +61,7 @@ const USAGE = `
     --delay <ミリ秒>       1 サイトごとの間隔 (既定 1500)
 
   init-config 送信の設定ファイルのひな形を作る
+    --preset gmail|workspace   Gmail / Google Workspace の SMTP を埋めた形で作る
   config      設定の状態を見る (足りない項目を挙げる)
 
   send     施策を走らせる。既定は下見のみ。実送信は --live を明示したときだけ
@@ -133,6 +134,7 @@ const options = {
   channel: { type: 'string' },
   template: { type: 'string' },
   live: { type: 'boolean' },
+  preset: { type: 'string' },
   add: { type: 'string' },
   remove: { type: 'string' },
   reason: { type: 'string' },
@@ -365,14 +367,30 @@ async function cmdCrawl(db: Db, v: Values): Promise<void> {
   console.log(`  営業お断りを検出    ${fmt(r.refusedFound).padStart(6)}`);
 }
 
-function cmdInitConfig(): void {
+function cmdInitConfig(v: Values): void {
   if (existsSync(CONFIG_PATH)) {
     console.error(`[設定] 既にあります: ${CONFIG_PATH}`);
     return;
   }
-  writeFileSync(CONFIG_PATH, JSON.stringify(CONFIG_TEMPLATE, null, 2) + '\n', 'utf8');
+  const presetArg = asString(v.preset);
+  if (presetArg && presetArg !== 'gmail' && presetArg !== 'workspace') {
+    throw new Error(`--preset は gmail か workspace を指定してください (指定: ${presetArg})`);
+  }
+  const preset = presetArg as 'gmail' | 'workspace' | undefined;
+  writeFileSync(CONFIG_PATH, JSON.stringify(configTemplate(preset), null, 2) + '\n', 'utf8');
   console.error(`[設定] ひな形を作りました: ${CONFIG_PATH}`);
   console.error('[設定] identity の 4 項目は特定電子メール法 4 条の要求です。必ず埋めてください');
+  if (preset) {
+    console.error('');
+    console.error('[設定] Gmail で送るには「アプリパスワード」が要ります:');
+    console.error('  1. Google アカウントで二段階認証を有効にする');
+    console.error('  2. https://myaccount.google.com/apppasswords で発行する');
+    console.error('  3. export EIGYO_SMTP_PASS="発行された16桁" を実行する');
+    console.error('  4. email.fromAddress と email.smtp.user に Gmail のアドレスを入れる');
+    console.error('');
+    console.error(`[設定] 1 日の上限は ${PRESET_DAILY_CAP[preset]} 通にしてあります`);
+    console.error('[設定] 普段使いのアドレスから大量に送ると、アカウントが止まる恐れがあります');
+  }
 }
 
 function cmdConfig(): void {
@@ -677,7 +695,7 @@ async function main(): Promise<void> {
         await cmdCrawl(db, v);
         break;
       case 'init-config':
-        cmdInitConfig();
+        cmdInitConfig(v);
         break;
       case 'config':
         cmdConfig();

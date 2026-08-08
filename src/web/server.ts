@@ -176,9 +176,38 @@ export function serve(db: Db, options: ServeOptions = {}) {
     }
   });
 
-  const port = options.port ?? 5173;
-  server.listen(port, HOST, () => {
+  // 待受口が別の何かに使われていることは普通に起きる (5173 は他の道具もよく使う)。
+  // そこで生のエラーを出して終わると、利用者は何をすればよいか分からない。
+  // 空いている口を探して、どこで開いたかを伝える。
+  const wanted = options.port ?? 5173;
+
+  // 案内するのは「実際に確保できた口」。listen に渡した番号ではない。
+  // 再試行のたびに callback を渡すと、失敗した番号の callback も後から発火して
+  // 開けない URL を案内してしまう (実際に起きた)。
+  server.on('listening', () => {
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : wanted;
     options.onListen?.(`http://${HOST}:${port}/`);
   });
+
+  let attemptsLeft = 10;
+  let current = wanted;
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && attemptsLeft > 0) {
+      attemptsLeft--;
+      current++;
+      console.error(`[画面] ${current - 1} は使用中のため ${current} を試します`);
+      server.listen(current, HOST);
+      return;
+    }
+    console.error(
+      err.code === 'EADDRINUSE'
+        ? `[画面] ${wanted} から ${current} まで空きがありません。--port で指定してください`
+        : `[画面] 起動できません: ${err.message}`,
+    );
+    process.exitCode = 1;
+  });
+
+  server.listen(wanted, HOST);
   return server;
 }

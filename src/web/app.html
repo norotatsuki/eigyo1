@@ -19,8 +19,14 @@
     padding: 12px 20px; display: flex; align-items: baseline; gap: 16px;
     position: sticky; top: 0; z-index: 10;
   }
-  header h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .02em; white-space: nowrap; }
+  header .basis { min-width: 0; }
   header .basis { color: var(--muted); font-size: 12px; }
+  header .local {
+    margin-left: auto; font-size: 11px; color: var(--accent);
+    background: var(--accent-soft); padding: 3px 9px; border-radius: 4px; white-space: nowrap;
+  }
+  @media (max-width: 1100px) { header .local { display: none; } }
   .layout { display: grid; grid-template-columns: 320px 1fr; gap: 0; align-items: start; }
   aside {
     border-right: 1px solid var(--line); background: var(--panel);
@@ -96,6 +102,7 @@
 <header>
   <h1>営業リスト</h1>
   <span class="basis" id="basis">読み込み中…</span>
+  <span class="local">この画面はこの端末だけで動いています（社外・社内の他端末からは開けません）</span>
 </header>
 
 <div class="layout">

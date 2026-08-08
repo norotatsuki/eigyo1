@@ -61,6 +61,31 @@ export interface OutreachConfig {
   caps: Record<string, Caps>;
 }
 
+/**
+ * よく使う送信元の設定。
+ *
+ * Gmail は「アプリパスワード」で SMTP を使う。二段階認証を有効にしたうえで
+ * https://myaccount.google.com/apppasswords から発行し、
+ * 環境変数 EIGYO_SMTP_PASS に入れる (設定ファイルには書かない)。
+ *
+ * 上限は Google 側の制限に合わせて低めにしてある。
+ * 無料の Gmail は 1 日 500 通、Google Workspace は 2,000 通。
+ * それ以前に迷惑メール報告が続くとアカウント自体が止まるため、
+ * 少量から始めて反応を見ること。
+ */
+export const SMTP_PRESETS = {
+  gmail: { host: 'smtp.gmail.com', port: 587, secure: false },
+  workspace: { host: 'smtp.gmail.com', port: 587, secure: false },
+} as const;
+
+export type SmtpPreset = keyof typeof SMTP_PRESETS;
+
+/** 送信元の種類に応じた 1 日の上限の目安。 */
+export const PRESET_DAILY_CAP: Readonly<Record<SmtpPreset, number>> = {
+  gmail: 100,      // 無料 Gmail の上限は 500 だが、評価を守るため控えめに始める
+  workspace: 300,  // Workspace の上限は 2,000。同上
+};
+
 const DEFAULT_CAPS: Record<string, Caps> = {
   postal: { perDay: 5000, perHour: 5000 },
   // 送信ドメインの評価を守るため、メールは少なく始めて徐々に増やす
@@ -133,6 +158,21 @@ export function checkChannelReady(config: OutreachConfig | null, channel: string
 }
 
 /** 設定ファイルのひな形。`init-config` で書き出す。 */
+export function configTemplate(preset?: SmtpPreset): typeof CONFIG_TEMPLATE {
+  if (!preset) return CONFIG_TEMPLATE;
+  return {
+    ...CONFIG_TEMPLATE,
+    email: {
+      ...CONFIG_TEMPLATE.email,
+      smtp: { ...SMTP_PRESETS[preset], user: '' },
+    },
+    caps: {
+      ...CONFIG_TEMPLATE.caps,
+      email: { perDay: PRESET_DAILY_CAP[preset], perHour: Math.ceil(PRESET_DAILY_CAP[preset] / 8) },
+    },
+  };
+}
+
 export const CONFIG_TEMPLATE = {
   identity: {
     name: '',
