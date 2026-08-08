@@ -149,6 +149,59 @@ CREATE INDEX IF NOT EXISTS idx_prof_site     ON company_profiles(website_url);
 CREATE INDEX IF NOT EXISTS idx_prof_refused  ON company_profiles(solicitation_refused);
 
 -- ---------------------------------------------------------------------------
+-- 除外リスト — 絶対に接触しない先
+--
+--   法人番号を鍵にした「送らない」の一次資料。特定電子メール法の受信拒否
+--   (法3条3項) はここに積む。取引先や競合を手で入れるのにも使う。
+--   法人マスタに無い先 (未取込・個人など) も登録できるよう外部キーは張らない。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS suppressions (
+  corporate_number TEXT PRIMARY KEY,
+  reason           TEXT NOT NULL,   -- opt_out / refused / customer / competitor / bounced / manual
+  note             TEXT,
+  added_by         TEXT,
+  added_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_suppress_reason ON suppressions(reason);
+
+-- ---------------------------------------------------------------------------
+-- 接触記録 — いつ・どの経路で・どうなったか
+--
+--   これが無いと翌月に同じ先へ二度送ることになる。
+--   実際に送った分だけでなく、ゲートで止めた分も記録する (止めた理由が残る)。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS outreach_log (
+  id               INTEGER PRIMARY KEY,
+  corporate_number TEXT NOT NULL,
+  channel          TEXT NOT NULL,   -- postal / email / form / phone
+  outcome          TEXT NOT NULL,   -- sent / blocked / failed / replied / bounced
+  blocked_reason   TEXT,            -- outcome = blocked のとき、ゲートが止めた理由
+  campaign         TEXT,            -- どの施策で送ったか
+  note             TEXT,
+  occurred_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_corp    ON outreach_log(corporate_number, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_outreach_channel ON outreach_log(channel, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_outreach_camp    ON outreach_log(campaign);
+-- 「送った実績があるか」を素早く引くため、成功分だけの部分索引
+CREATE INDEX IF NOT EXISTS idx_outreach_sent
+  ON outreach_log(corporate_number, channel, occurred_at) WHERE outcome = 'sent';
+
+-- ---------------------------------------------------------------------------
+-- 保存した条件 — 同じ切り口を毎回組み直さないため
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS segments (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE,
+  filter     TEXT NOT NULL,   -- SearchFilter の JSON
+  note       TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- 取込の監査記録
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ingest_runs (
