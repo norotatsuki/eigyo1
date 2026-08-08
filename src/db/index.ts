@@ -68,6 +68,17 @@ export function endBulkLoad(db: Db): void {
   db.pragma('wal_checkpoint(TRUNCATE)');
 }
 
+/**
+ * 統計を取り直す。大量に書き込んだあとに必ず呼ぶ。
+ *
+ * これを怠ると SQLite が索引を選び損ね、都道府県で絞った検索が
+ * 500 万行の全走査に落ちる (実測 13 秒 → ANALYZE 後 1 秒台)。
+ * 500 万件で 11 秒ほどかかるが、取り込みの所要に比べれば無視できる。
+ */
+export function analyze(db: Db): void {
+  db.exec('ANALYZE');
+}
+
 /** 全文検索の索引を作り直す。大量投入のあとに 1 度だけ呼ぶ。 */
 export function rebuildFts(db: Db): void {
   db.exec(`INSERT INTO corporations_fts(corporations_fts) VALUES('rebuild')`);

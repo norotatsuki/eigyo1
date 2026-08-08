@@ -120,7 +120,8 @@ CREATE TABLE IF NOT EXISTS company_profiles (
   updated_at            TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_prof_industry ON company_profiles(industry_code);
+-- 業種で絞るときは確信度も必ず併用するため、まとめて索引にする
+CREATE INDEX IF NOT EXISTS idx_prof_industry ON company_profiles(industry_code, industry_confidence);
 CREATE INDEX IF NOT EXISTS idx_prof_capital  ON company_profiles(capital);
 CREATE INDEX IF NOT EXISTS idx_prof_emp      ON company_profiles(employees);
 CREATE INDEX IF NOT EXISTS idx_prof_site     ON company_profiles(website_url);
@@ -144,3 +145,15 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_source ON ingest_runs(source, started_at);
+
+-- ---------------------------------------------------------------------------
+-- 集計結果の控え
+--   画面の選択肢 (都道府県・業種・法人種別の件数) は 500 万行の集計になり、
+--   毎回作ると 46 秒かかる。中身が変わっていなければ作り直さない。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS meta_cache (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  fingerprint TEXT NOT NULL,   -- 基準日と件数から作る。変わっていたら作り直す
+  payload     TEXT NOT NULL,   -- JSON
+  computed_at TEXT NOT NULL
+);

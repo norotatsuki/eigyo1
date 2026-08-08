@@ -5,7 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 
 import type { Db } from '../../db/index.ts';
-import { beginBulkLoad, endBulkLoad, finishRun, rebuildFts, startRun } from '../../db/index.ts';
+import { analyze, beginBulkLoad, endBulkLoad, finishRun, rebuildFts, startRun } from '../../db/index.ts';
 import { readRecords } from '../csv.ts';
 import {
   fetchCatalog,
@@ -151,6 +151,7 @@ export async function loadZenken(db: Db, options: LoadOptions = {}): Promise<Loa
   }
 
   rebuildFts(db);
+  analyze(db);
 
   return {
     fileName: lastFileName,
