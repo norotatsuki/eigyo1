@@ -16,6 +16,7 @@ import {
   searchCompanies,
   streamCompanies,
   toCsvLines,
+  toLabelCsvLines,
   type SearchFilter,
   type SearchOptions,
 } from '../search/query.ts';
@@ -127,17 +128,28 @@ function handle(db: Db, meta: Meta, req: IncomingMessage, res: ServerResponse): 
   }
 
   if (url.pathname === '/api/export') {
-    const filter = filterFromParams(q);
+    const labels = q.get('labels') === '1';
+    const rows = streamCompanies(db, filterFromParams(q), optionsFromParams(q));
     const stamp = new Date().toISOString().slice(0, 10);
     res.writeHead(200, {
       'content-type': 'text/csv; charset=utf-8',
-      'content-disposition': `attachment; filename="companies-${stamp}.csv"`,
+      'content-disposition': `attachment; filename="${labels ? 'labels' : 'companies'}-${stamp}.csv"`,
     });
     res.write('﻿'); // 表計算ソフトで文字化けさせないため
-    for (const line of toCsvLines(streamCompanies(db, filter, optionsFromParams(q)))) {
+    for (const line of labels ? toLabelCsvLines(rows) : toCsvLines(rows)) {
       res.write(line + '\n');
     }
     res.end();
+    return;
+  }
+
+  // 接触の状況。画面の見出しに出す
+  if (url.pathname === '/api/outreach-summary') {
+    const suppressed = db.prepare('SELECT COUNT(*) AS n FROM suppressions').get() as { n: number };
+    const sent = db
+      .prepare("SELECT COUNT(DISTINCT corporate_number) AS n FROM outreach_log WHERE outcome = 'sent'")
+      .get() as { n: number };
+    sendJson(res, 200, { suppressed: suppressed.n, contacted: sent.n });
     return;
   }
 

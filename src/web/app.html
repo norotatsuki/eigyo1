@@ -168,6 +168,7 @@
       <span class="elapsed" id="elapsed"></span>
       <div class="push">
         <button class="ghost" id="reset">条件を消す</button>
+        <button class="ghost" id="exportLabels">宛名を書き出す</button>
         <button id="export">CSV に書き出す</button>
       </div>
     </div>
@@ -375,6 +376,9 @@ async function boot() {
     'データ基準日 ' + (meta.sourceDate ?? '不明') +
     ' ／ 営業対象 ' + fmt(meta.totalActive) + ' 社' +
     ' ／ 業種あり（0.7以上） ' + fmt(meta.industryReliable) + ' 社';
+  fetch('/api/outreach-summary').then((r) => r.json()).then((o) => {
+    $('basis').textContent += ' ／ 除外 ' + fmt(o.suppressed) + ' 社 ／ 接触済み ' + fmt(o.contacted) + ' 社';
+  });
   fillIndustries(meta.industries);
   fillList('pref', meta.prefectures, 'code');
   fillList('kind', meta.kinds, 'code');
@@ -387,10 +391,14 @@ async function boot() {
   }
   $('prev').addEventListener('click', () => { offset = Math.max(0, offset - LIMIT); run(); });
   $('next').addEventListener('click', () => { offset += LIMIT; run(); });
-  $('export').addEventListener('click', () => {
+  const doExport = (labels) => {
     if (lastTotal > 200000 && !confirm(fmt(lastTotal) + ' 件を書き出します。よろしいですか？')) return;
-    location.href = '/api/export?' + buildParams();
-  });
+    const p = buildParams();
+    if (labels) p.set('labels', '1');
+    location.href = '/api/export?' + p;
+  };
+  $('export').addEventListener('click', () => doExport(false));
+  $('exportLabels').addEventListener('click', () => doExport(true));
   $('reset').addEventListener('click', () => {
     document.querySelectorAll('aside input[type=checkbox]').forEach((el) => { el.checked = false; });
     $('keyword').value = '';

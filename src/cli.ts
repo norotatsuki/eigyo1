@@ -14,6 +14,12 @@ import { loadZenken } from './ingest/nta/load.ts';
 import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
 import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
+import { applyGate, recordOutreach, CHANNEL_POLICY, type Channel } from './outreach/gate.ts';
+import {
+  addSuppressions, countSuppressions, removeSuppression, summarizeOutreach,
+  saveSegment, getSegment, listSegments, deleteSegment,
+  SUPPRESSION_REASONS, type SuppressionReason,
+} from './outreach/store.ts';
 import { divisionName, majorDivisionOf } from './enrich/industry/classification.ts';
 import { serve } from './web/server.ts';
 import {
@@ -21,6 +27,7 @@ import {
   searchCompanies,
   streamCompanies,
   toCsvLines,
+  toLabelCsvLines,
   type SearchFilter,
   type SearchOptions,
 } from './search/query.ts';
@@ -37,6 +44,26 @@ const USAGE = `
 
   serve    画面を出す (127.0.0.1 のみ。社外からは届かない)
     --port <番号>          待受ポート (既定 5173)
+
+  suppress 除外リスト (絶対に接触しない先) を扱う
+    --add <法人番号,…>     除外に積む
+    --remove <法人番号>    除外から外す
+    --reason <理由>        opt_out / refused / customer / competitor / bounced / manual
+    --note <文字列>        理由の補足
+    (引数なしで内訳を表示)
+
+  outreach 接触記録を扱う
+    --check <経路>         いま検索条件に合う先が送れるかを判定する
+                           (postal / email / form / phone)
+    --record <経路>        送った実績として記録する。--check で通った先が対象
+    --campaign <名前>      施策名。記録に残る
+    (引数なしで内訳を表示)
+
+  segment  絞り込み条件に名前を付けて残す
+    --save <名前>          いまの絞り込み条件を保存する
+    --use <名前>           保存した条件を読み込んで検索する
+    --delete <名前>        削除する
+    (引数なしで一覧を表示)
 
   stats    取り込み内容の内訳を表示する
 
@@ -65,6 +92,7 @@ const USAGE = `
     --limit <件数>         表示件数 (search のみ、既定 20)
     --order <並び>         name / assigned_desc / capital_desc / employees_desc
     --out <パス>           書き出し先 (export のみ)
+    --labels               宛名の形で書き出す (差込印刷用。export のみ)
 `.trim();
 
 const options = {
@@ -72,6 +100,17 @@ const options = {
   db: { type: 'string' },
   'min-confidence': { type: 'string' },
   port: { type: 'string' },
+  labels: { type: 'boolean' },
+  add: { type: 'string' },
+  remove: { type: 'string' },
+  reason: { type: 'string' },
+  note: { type: 'string' },
+  check: { type: 'string' },
+  record: { type: 'string' },
+  campaign: { type: 'string' },
+  save: { type: 'string' },
+  use: { type: 'string' },
+  delete: { type: 'string' },
   keyword: { type: 'string' },
   pref: { type: 'string' },
   kind: { type: 'string' },
@@ -106,8 +145,9 @@ const num = (v: string | boolean | undefined): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-function toFilter(v: Values): SearchFilter {
+function toFilter(v: Values, base: SearchFilter | null = null): SearchFilter {
   const filter: SearchFilter = {
+    ...(base ?? {}),
     activeOnly: v['include-inactive'] !== true,
     excludeRefused: v['include-refused'] !== true,
   };
@@ -238,6 +278,115 @@ function cmdClassify(db: Db, v: Values): void {
   }
 }
 
+function cmdSuppress(db: Db, v: Values): void {
+  const add = list(v.add);
+  const remove = asString(v.remove);
+
+  if (add?.length) {
+    const reason = (asString(v.reason) ?? 'manual') as SuppressionReason;
+    if (!SUPPRESSION_REASONS.includes(reason)) {
+      throw new Error(`理由の指定が不正です: ${reason} (${SUPPRESSION_REASONS.join(' / ')})`);
+    }
+    const note = asString(v.note);
+    addSuppressions(
+      db,
+      add.map((n) => ({ corporateNumber: n, reason, ...(note ? { note } : {}) })),
+    );
+    console.error(`[除外] ${fmt(add.length)} 件を積みました (理由: ${reason})`);
+  }
+  if (remove) {
+    console.error(removeSuppression(db, remove) ? `[除外] ${remove} を外しました` : `[除外] ${remove} は載っていません`);
+  }
+
+  const rows = countSuppressions(db);
+  const total = rows.reduce((s, r) => s + r.count, 0);
+  console.log(`除外リスト: ${fmt(total)} 件`);
+  for (const r of rows) console.log(`  ${r.reason.padEnd(12, ' ')} ${fmt(r.count).padStart(8)}`);
+  if (total === 0) console.log('  (まだ何も積まれていません)');
+}
+
+function cmdOutreach(db: Db, v: Values, base: SearchFilter | null): void {
+  const check = asString(v.check) as Channel | undefined;
+  const record = asString(v.record) as Channel | undefined;
+  const channel = check ?? record;
+
+  if (channel) {
+    if (!(channel in CHANNEL_POLICY)) {
+      throw new Error(`経路の指定が不正です: ${channel} (${Object.keys(CHANNEL_POLICY).join(' / ')})`);
+    }
+    const filter = toFilter(v, base);
+    const numbers = [...streamCompanies(db, filter)].map((r) => r.corporate_number);
+    console.error(`[接触] 検索条件に合う ${fmt(numbers.length)} 件を ${channel} で判定します`);
+
+    const campaign = asString(v.campaign);
+    const result = applyGate(db, numbers, channel, { ...(campaign ? { campaign } : {}) });
+
+    console.log(`送れる: ${fmt(result.allowed.length)} 件 / 止めた: ${fmt(result.blocked.length)} 件`);
+    for (const [reason, n] of Object.entries(result.blockedByReason)) {
+      console.log(`  止めた理由 ${reason.padEnd(16, ' ')} ${fmt(n).padStart(8)}`);
+    }
+
+    if (record) {
+      const write = db.transaction((ns: string[]) => {
+        for (const n of ns) {
+          recordOutreach(db, {
+            corporateNumber: n, channel, outcome: 'sent',
+            ...(campaign ? { campaign } : {}),
+          });
+        }
+      });
+      write(result.allowed);
+      console.error(`[接触] ${fmt(result.allowed.length)} 件を送付済みとして記録しました`);
+    } else {
+      console.error('[接触] 判定のみ。記録するには --record <経路> を使ってください');
+    }
+    return;
+  }
+
+  const summary = summarizeOutreach(db, asString(v.campaign));
+  if (summary.length === 0) {
+    console.log('接触の記録はまだありません。');
+    return;
+  }
+  console.log('接触の内訳');
+  for (const r of summary) {
+    console.log(`  ${r.channel.padEnd(8, ' ')} ${r.outcome.padEnd(10, ' ')} ${fmt(r.count).padStart(8)}`);
+  }
+}
+
+function cmdSegment(db: Db, v: Values, base: SearchFilter | null): SearchFilter | null {
+  const save = asString(v.save);
+  const use = asString(v.use);
+  const del = asString(v.delete);
+
+  if (save) {
+    saveSegment(db, save, toFilter(v, base), asString(v.note));
+    console.error(`[条件] 「${save}」を保存しました`);
+    return null;
+  }
+  if (del) {
+    console.error(deleteSegment(db, del) ? `[条件] 「${del}」を削除しました` : `[条件] 「${del}」はありません`);
+    return null;
+  }
+  if (use) {
+    const s = getSegment(db, use);
+    if (!s) throw new Error(`保存された条件が見つかりません: ${use}`);
+    return s.filter;
+  }
+
+  const all = listSegments(db);
+  if (all.length === 0) {
+    console.log('保存された条件はありません。search の条件に --save <名前> を付けて保存できます。');
+    return null;
+  }
+  console.log('保存された条件');
+  for (const s of all) {
+    console.log(`  ${s.name}${s.note ? `  — ${s.note}` : ''}`);
+    console.log(`      ${JSON.stringify(s.filter)}`);
+  }
+  return null;
+}
+
 function cmdStats(db: Db): void {
   const total = db.prepare('SELECT COUNT(*) AS n FROM corporations').get() as { n: number };
   if (total.n === 0) {
@@ -279,8 +428,8 @@ function cmdStats(db: Db): void {
   }
 }
 
-function cmdSearch(db: Db, v: Values): void {
-  const filter = toFilter(v);
+function cmdSearch(db: Db, v: Values, base: SearchFilter | null): void {
+  const filter = toFilter(v, base);
   const opts = toSearchOptions(v);
   if (opts.limit === undefined) opts.limit = 20;
 
@@ -297,18 +446,20 @@ function cmdSearch(db: Db, v: Values): void {
   }
 }
 
-function cmdExport(db: Db, v: Values): void {
+function cmdExport(db: Db, v: Values, base: SearchFilter | null): void {
   const out = asString(v.out);
   if (!out) throw new Error('export には --out <パス> が必要です');
 
-  const filter = toFilter(v);
+  const filter = toFilter(v, base);
   const total = countCompanies(db, filter);
   console.error(`[書出] 該当 ${fmt(total)} 件 → ${out}`);
 
   const stream = createWriteStream(out, { encoding: 'utf8' });
   stream.write('﻿'); // 表計算ソフトで文字化けさせないため
+  const rows = streamCompanies(db, filter, toSearchOptions(v));
+  const lines = v.labels === true ? toLabelCsvLines(rows) : toCsvLines(rows);
   let written = 0;
-  for (const line of toCsvLines(streamCompanies(db, filter, toSearchOptions(v)))) {
+  for (const line of lines) {
     stream.write(line + '\n');
     written++;
   }
@@ -333,6 +484,15 @@ async function main(): Promise<void> {
   const dbPath = asString(v.db) ?? defaultDbPath();
   const db = openDb(dbPath);
   try {
+    // 保存した条件を土台にする。--use 以外の指定はその上から重ねる
+    const useName = asString(v.use);
+    let base: SearchFilter | null = null;
+    if (useName && command !== 'segment') {
+      const s = getSegment(db, useName);
+      if (!s) throw new Error(`保存された条件が見つかりません: ${useName}`);
+      base = s.filter;
+      console.error(`[条件] 「${useName}」を読み込みました`);
+    }
     switch (command) {
       case 'ingest':
         await cmdIngest(db, v);
@@ -347,10 +507,19 @@ async function main(): Promise<void> {
         cmdStats(db);
         break;
       case 'search':
-        cmdSearch(db, v);
+        cmdSearch(db, v, base);
         break;
       case 'export':
-        cmdExport(db, v);
+        cmdExport(db, v, base);
+        break;
+      case 'suppress':
+        cmdSuppress(db, v);
+        break;
+      case 'outreach':
+        cmdOutreach(db, v, base);
+        break;
+      case 'segment':
+        cmdSegment(db, v, base);
         break;
       default:
         console.error(`不明なコマンド: ${command}\n`);
