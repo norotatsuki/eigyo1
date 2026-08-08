@@ -87,6 +87,23 @@ const fromPlain = (hint = ''): string => `
 /** 付加情報を一切使わない場合。500 万行に結合を張らずに済む。 */
 const fromCorpOnly = (hint = ''): string => `FROM corporations c${hint}`;
 
+/**
+ * 接触してはいけない先。2 つの出どころがある。
+ *   suppressions … 手で積んだ除外 (受信拒否・取引先・競合など)
+ *   company_profiles.solicitation_refused … サイトで営業お断りを検出したもの
+ * どちらも「送らない」なので、検索の既定でも外す。
+ */
+const BLOCKED_EXISTS = `
+  EXISTS (SELECT 1 FROM suppressions s WHERE s.corporate_number = c.corporate_number)
+  OR EXISTS (SELECT 1 FROM company_profiles pr
+              WHERE pr.corporate_number = c.corporate_number AND pr.solicitation_refused = 1)`;
+
+/** 接触してはいけない先の一覧。件数の引き算で使う (小さいので毎回作って構わない)。 */
+const BLOCKED_SET = `
+  SELECT corporate_number FROM suppressions
+  UNION
+  SELECT corporate_number FROM company_profiles WHERE solicitation_refused = 1`;
+
 const FROM_PLAIN = fromPlain();
 const FROM_CORP_ONLY = fromCorpOnly();
 
@@ -193,18 +210,10 @@ function buildWhere(filter: SearchFilter, forCount = false, indexHint = ''): Bui
   if (activeOnly) clauses.push('c.is_active = 1');
 
   if (excludeRefused) {
-    // プロフィール未取得 (NULL) は「お断りが確認されていない」= 対象に残す
-    //
-    // 結合を張っていない場合は NOT EXISTS で照会する。お断りの行はごく少数で
-    // 索引が効くため、500 万行それぞれに結合するより桁違いに速い
-    // (実測: 全件の件数取得が 16.5 秒 → 1 秒未満)。
-    clauses.push(
-      joinProfile
-        ? 'COALESCE(p.solicitation_refused, 0) = 0'
-        : `NOT EXISTS (SELECT 1 FROM company_profiles pr
-                        WHERE pr.corporate_number = c.corporate_number
-                          AND pr.solicitation_refused = 1)`,
-    );
+    // 一覧は LIMIT で打ち切るので、見た行だけ照会すれば済む。
+    // 件数の方は 500 万行すべてを見ることになるため、別に引き算で求める
+    // (countCompanies を参照)。
+    clauses.push(`NOT (${BLOCKED_EXISTS})`);
   }
 
   if (filter.prefCodes?.length) {
@@ -303,22 +312,24 @@ function orderClause(orderBy: SearchOptions['orderBy']): string {
 }
 
 /**
- * お断りの件数を数えるための読み取り元。
+ * 接触禁止の件数を数えるための読み取り元。
  *
- * 付加情報の側から回すよう CROSS JOIN で固定する。お断りの行はごく少数で
- * 索引が効くのに対し、法人の側から回すと 115 万行それぞれに結合を張ることになる
+ * 禁止された側から回すよう CROSS JOIN で固定する。禁止の行はごく少数なのに対し、
+ * 法人の側から回すと 115 万行それぞれに結合を張ることになる
  * (実測 4.1 秒 → 0.04 秒)。
  */
-function refusedFrom(from: string): string {
+function blockedFrom(from: string): string {
   if (from === FROM_FTS || from === FROM_FTS_CORP_ONLY) {
     return `
       FROM corporations_fts f
       CROSS JOIN corporations c ON c.id = f.rowid
-      JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
+      JOIN (${BLOCKED_SET}) b ON b.corporate_number = c.corporate_number
+      LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
   }
   return `
-    FROM company_profiles p
-    CROSS JOIN corporations c ON c.corporate_number = p.corporate_number`;
+    FROM (${BLOCKED_SET}) b
+    CROSS JOIN corporations c ON c.corporate_number = b.corporate_number
+    LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
 }
 
 /**
@@ -341,12 +352,9 @@ export function countCompanies(db: Db, filter: SearchFilter): number {
   }
 
   const base = buildWhere({ ...filter, excludeRefused: false }, true);
-  const refusedWhere = base.sql
-    ? `${base.sql} AND p.solicitation_refused = 1`
-    : 'WHERE p.solicitation_refused = 1';
   const sql = `
     SELECT (SELECT COUNT(*) ${base.from} ${base.sql})
-         - (SELECT COUNT(*) ${refusedFrom(base.from)} ${refusedWhere}) AS n`;
+         - (SELECT COUNT(*) ${blockedFrom(base.from)} ${base.sql}) AS n`;
   const row = db.prepare(sql).get(...base.params, ...base.params) as { n: number };
   return row.n;
 }
@@ -383,6 +391,30 @@ function csvEscape(v: unknown): string {
   if (v === null || v === undefined) return '';
   const s = String(v);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+const LABEL_HEADER = ['郵便番号', '住所', '会社名', '宛名', '法人番号'];
+
+/**
+ * 差込印刷用の宛名を書き出す。
+ *
+ * サイトもメールも分かっていない今、実際に接触できる唯一の経路が郵送。
+ * 郵便番号と所在地は国税庁の全件データに必ず入っているため、
+ * 500 万社すべてに宛名を作れる。
+ *
+ * @param honorific 宛名の敬称。部署が分かっていないので既定は「御中」
+ */
+export function* toLabelCsvLines(
+  rows: Iterable<CompanyRow>,
+  honorific = '御中',
+): Generator<string, void, void> {
+  yield LABEL_HEADER.join(',');
+  for (const r of rows) {
+    const postal = r.post_code ? `${r.post_code.slice(0, 3)}-${r.post_code.slice(3)}` : '';
+    yield [postal, r.address_full, r.name, `${r.name} ${honorific}`, r.corporate_number]
+      .map(csvEscape)
+      .join(',');
+  }
 }
 
 /** 表計算ソフトで開ける形に整えて 1 行ずつ返す。 */
