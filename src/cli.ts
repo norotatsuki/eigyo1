@@ -15,6 +15,7 @@ import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
 import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { divisionName, majorDivisionOf } from './enrich/industry/classification.ts';
+import { serve } from './web/server.ts';
 import {
   countCompanies,
   searchCompanies,
@@ -33,6 +34,9 @@ const USAGE = `
 
   classify 商号と法人格から業種を推定して付加情報に書き込む
     --min-confidence <値>  この確信度未満は保存しない (既定 0.5)
+
+  serve    画面を出す (127.0.0.1 のみ。社外からは届かない)
+    --port <番号>          待受ポート (既定 5173)
 
   stats    取り込み内容の内訳を表示する
 
@@ -67,6 +71,7 @@ const options = {
   region: { type: 'string' },
   db: { type: 'string' },
   'min-confidence': { type: 'string' },
+  port: { type: 'string' },
   keyword: { type: 'string' },
   pref: { type: 'string' },
   kind: { type: 'string' },
@@ -169,6 +174,26 @@ async function cmdIngest(db: Db, v: Values): Promise<void> {
       `読取 ${fmt(result.rowsRead)} / 投入 ${fmt(result.rowsUpserted)} / ` +
       `除外 ${fmt(result.rowsSkipped)} — ${sec} 秒`,
   );
+}
+
+/** 画面を出して待ち続ける。Ctrl-C まで戻らない。 */
+function cmdServe(db: Db, v: Values): Promise<void> {
+  const port = num(v.port) ?? 5173;
+  return new Promise<void>((resolve) => {
+    const server = serve(db, {
+      port,
+      onListen: (url) => {
+        console.error(`[画面] ${url} を開いてください (127.0.0.1 のみ待受)`);
+        console.error('[画面] 止めるときは Ctrl-C');
+      },
+    });
+    const stop = () => {
+      console.error('\n[画面] 停止します');
+      server.close(() => resolve());
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  });
 }
 
 function cmdClassify(db: Db, v: Values): void {
@@ -314,6 +339,9 @@ async function main(): Promise<void> {
         break;
       case 'classify':
         cmdClassify(db, v);
+        break;
+      case 'serve':
+        await cmdServe(db, v);
         break;
       case 'stats':
         cmdStats(db);

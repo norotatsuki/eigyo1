@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>営業リスト — 社内</title>
+<style>
+  :root {
+    --bg: #fbfbf9; --panel: #fff; --ink: #1c1c1a; --muted: #6f6d66;
+    --line: #e2e0d8; --accent: #2f5d50; --accent-soft: #eef3f1; --warn: #8a5a2b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.6 "Hiragino Sans", "Yu Gothic", Meiryo, system-ui, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 12px 20px; display: flex; align-items: baseline; gap: 16px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+  header .basis { color: var(--muted); font-size: 12px; }
+  .layout { display: grid; grid-template-columns: 320px 1fr; gap: 0; align-items: start; }
+  aside {
+    border-right: 1px solid var(--line); background: var(--panel);
+    padding: 16px 18px 60px; height: calc(100vh - 49px); overflow-y: auto; position: sticky; top: 49px;
+  }
+  main { padding: 16px 20px 60px; min-width: 0; }
+  fieldset { border: 0; padding: 0; margin: 0 0 18px; }
+  legend, .lbl {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    letter-spacing: .04em; margin-bottom: 6px; display: block;
+  }
+  input[type=text], input[type=number], input[type=date], select {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px;
+    font: inherit; font-size: 13px; background: #fff; color: var(--ink);
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .scroll-list {
+    max-height: 190px; overflow-y: auto; border: 1px solid var(--line);
+    border-radius: 5px; padding: 6px 8px; background: #fff;
+  }
+  .scroll-list label {
+    display: flex; gap: 7px; align-items: baseline; padding: 2px 0;
+    font-size: 13px; cursor: pointer;
+  }
+  .scroll-list .n { margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .scroll-list .grp {
+    font-size: 11px; font-weight: 600; color: var(--muted);
+    margin: 7px 0 2px; padding-top: 5px; border-top: 1px solid var(--line);
+  }
+  .scroll-list .grp:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .check { display: flex; gap: 7px; align-items: baseline; font-size: 13px; padding: 2px 0; cursor: pointer; }
+  .summary {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+    padding: 12px 16px; margin-bottom: 14px;
+  }
+  .count { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .count-unit { color: var(--muted); font-size: 13px; }
+  .elapsed { color: var(--muted); font-size: 12px; }
+  button {
+    font: inherit; font-size: 13px; padding: 8px 15px; border-radius: 5px;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button.ghost { background: #fff; color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .push { margin-left: auto; display: flex; gap: 8px; }
+  /* 列幅を固定しないと、長い所在地に押されて商号が 1 文字幅まで潰れる */
+  table { width: 100%; min-width: 660px; border-collapse: collapse; background: var(--panel); font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .04em; white-space: nowrap; }
+  col.c-name { width: 26%; } col.c-ind { width: 14%; } col.c-addr { width: 33%; }
+  col.c-num { width: 16%; } col.c-date { width: 11%; }
+  @media (max-width: 1200px) { .layout { grid-template-columns: 280px 1fr; } }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+  td.name { font-weight: 500; }
+  .tag {
+    display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px;
+    background: var(--accent-soft); color: var(--accent); white-space: nowrap;
+  }
+  .tag.low { background: #f6efe4; color: var(--warn); }
+  .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .pager span { color: var(--muted); font-size: 12px; }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  .note { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>営業リスト</h1>
+  <span class="basis" id="basis">読み込み中…</span>
+</header>
+
+<div class="layout">
+  <aside>
+    <fieldset>
+      <label class="lbl" for="keyword">商号に含む語</label>
+      <input type="text" id="keyword" placeholder="建設 / システム / 酒造">
+      <div class="note">全角半角のゆれは自動で吸収します</div>
+    </fieldset>
+
+    <fieldset>
+      <span class="lbl">業種</span>
+      <div class="scroll-list" id="industry"></div>
+      <div class="row2" style="margin-top:8px">
+        <div>
+          <label class="lbl" for="industryConfidence">確からしさ</label>
+          <select id="industryConfidence">
+            <option value="0.7" selected>0.7 以上（推奨）</option>
+            <option value="0.9">0.9 以上（ほぼ確実）</option>
+            <option value="">問わない</option>
+          </select>
+        </div>
+      </div>
+      <div class="note">業種は商号からの推定です。0.5〜0.6 帯は「工業」「商事」などで当てになりません</div>
+    </fieldset>
+
+    <fieldset>
+      <span class="lbl">都道府県</span>
+      <div class="scroll-list" id="pref"></div>
+    </fieldset>
+
+    <fieldset>
+      <span class="lbl">法人種別</span>
+      <div class="scroll-list" id="kind" style="max-height:150px"></div>
+    </fieldset>
+
+    <fieldset>
+      <span class="lbl">法人番号の指定日</span>
+      <div class="row2">
+        <input type="date" id="assignedFrom" aria-label="開始日">
+        <input type="date" id="assignedTo" aria-label="終了日">
+      </div>
+      <div class="note">設立時期のおおよその代わりになります</div>
+    </fieldset>
+
+    <fieldset>
+      <span class="lbl">並び順</span>
+      <select id="order">
+        <option value="name">商号順</option>
+        <option value="assigned_desc">新しい順</option>
+      </select>
+    </fieldset>
+
+    <fieldset>
+      <span class="lbl">対象</span>
+      <label class="check"><input type="checkbox" id="includeInactive"> 閉鎖・除外された法人も含める</label>
+      <label class="check"><input type="checkbox" id="includeRefused"> 営業お断りの先も含める</label>
+    </fieldset>
+  </aside>
+
+  <main>
+    <div class="summary">
+      <div>
+        <span class="count" id="count">—</span>
+        <span class="count-unit">件</span>
+      </div>
+      <span class="elapsed" id="elapsed"></span>
+      <div class="push">
+        <button class="ghost" id="reset">条件を消す</button>
+        <button id="export">CSV に書き出す</button>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <table>
+        <colgroup>
+          <col class="c-name"><col class="c-ind"><col class="c-addr"><col class="c-num"><col class="c-date">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>商号</th><th>業種</th><th>所在地</th><th>法人番号</th><th>指定日</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="5" class="empty">読み込み中…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="pager">
+      <button class="ghost" id="prev">前へ</button>
+      <button class="ghost" id="next">次へ</button>
+      <span id="range"></span>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n.toLocaleString('ja-JP');
+const LIMIT = 50;
+let offset = 0;
+let lastTotal = 0;
+let timer = null;
+
+function checkedValues(containerId) {
+  return [...document.querySelectorAll('#' + containerId + ' input:checked')].map((el) => el.value);
+}
+
+function buildParams() {
+  const p = new URLSearchParams();
+  const kw = $('keyword').value.trim();
+  if (kw) p.set('keyword', kw);
+  for (const v of checkedValues('industry')) p.append('industry', v);
+  for (const v of checkedValues('pref')) p.append('pref', v);
+  for (const v of checkedValues('kind')) p.append('kind', v);
+  const conf = $('industryConfidence').value;
+  if (conf) p.set('industryConfidence', conf);
+  if ($('assignedFrom').value) p.set('assignedFrom', $('assignedFrom').value);
+  if ($('assignedTo').value) p.set('assignedTo', $('assignedTo').value);
+  if ($('includeInactive').checked) p.set('includeInactive', '1');
+  if ($('includeRefused').checked) p.set('includeRefused', '1');
+  p.set('order', $('order').value);
+  return p;
+}
+
+function renderRows(rows) {
+  const tbody = $('rows');
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">条件に合う法人がありません</td></tr>';
+    return;
+  }
+  tbody.replaceChildren(...rows.map((r) => {
+    const tr = document.createElement('tr');
+    const cells = [
+      r.name,
+      null, // 業種はタグで入れる
+      (r.post_code ? '〒' + r.post_code + ' ' : '') + r.address_full,
+      r.corporate_number,
+      r.assignment_date || '',
+    ];
+    cells.forEach((v, i) => {
+      const td = document.createElement('td');
+      if (i === 1) {
+        if (r.industry_name) {
+          const tag = document.createElement('span');
+          tag.className = 'tag';
+          tag.textContent = r.industry_name;
+          td.append(tag);
+        }
+      } else {
+        td.textContent = v;
+        if (i === 0) td.className = 'name';
+        if (i === 3 || i === 4) td.className = 'num';
+      }
+      tr.append(td);
+    });
+    return tr;
+  }));
+}
+
+// 件数の集計は数秒かかることがある。一覧を待たせないよう別々に投げ、
+// 後から届いた方が古い条件のものなら捨てる。
+let generation = 0;
+
+async function run() {
+  const mine = ++generation;
+  const p = buildParams();
+  const listParams = new URLSearchParams(p);
+  listParams.set('limit', String(LIMIT));
+  listParams.set('offset', String(offset));
+
+  $('elapsed').textContent = '検索中…';
+  $('count').textContent = '…';
+
+  fetch('/api/search?' + listParams).then((r) => r.json()).then((data) => {
+    if (mine !== generation) return;
+    renderRows(data.rows);
+    $('elapsed').textContent = data.elapsedMs + ' ms';
+    $('prev').disabled = offset === 0;
+    $('next').disabled = data.rows.length < LIMIT;
+    $('range').textContent = data.rows.length > 0
+      ? fmt(offset + 1) + '–' + fmt(offset + data.rows.length) + ' 件目'
+      : '';
+  });
+
+  fetch('/api/count?' + p).then((r) => r.json()).then((data) => {
+    if (mine !== generation) return;
+    lastTotal = data.total;
+    $('count').textContent = fmt(data.total);
+    if (offset + LIMIT >= data.total) $('next').disabled = true;
+  });
+}
+
+function schedule() {
+  offset = 0;
+  clearTimeout(timer);
+  timer = setTimeout(run, 250);
+}
+
+function fillList(containerId, items, valueKey) {
+  const box = $(containerId);
+  box.replaceChildren(...items.map((it) => {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = it[valueKey];
+    cb.addEventListener('change', schedule);
+    const text = document.createElement('span');
+    text.textContent = it.label;
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = fmt(it.count);
+    label.append(cb, text, n);
+    return label;
+  }));
+}
+
+function fillIndustries(items) {
+  const box = $('industry');
+  const nodes = [];
+  let currentMajor = null;
+  for (const it of items) {
+    if (it.major !== currentMajor) {
+      currentMajor = it.major;
+      const h = document.createElement('div');
+      h.className = 'grp';
+      h.textContent = it.majorLabel;
+      nodes.push(h);
+    }
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = it.code;
+    cb.addEventListener('change', schedule);
+    const text = document.createElement('span');
+    text.textContent = it.label;
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = fmt(it.count);
+    label.append(cb, text, n);
+    nodes.push(label);
+  }
+  box.replaceChildren(...nodes);
+}
+
+async function boot() {
+  const meta = await (await fetch('/api/meta')).json();
+  $('basis').textContent =
+    'データ基準日 ' + (meta.sourceDate ?? '不明') +
+    ' ／ 営業対象 ' + fmt(meta.totalActive) + ' 社' +
+    ' ／ 業種あり（0.7以上） ' + fmt(meta.industryReliable) + ' 社';
+  fillIndustries(meta.industries);
+  fillList('pref', meta.prefectures, 'code');
+  fillList('kind', meta.kinds, 'code');
+
+  for (const id of ['keyword']) $(id).addEventListener('input', schedule);
+  for (const id of ['industryConfidence', 'assignedFrom', 'assignedTo', 'order', 'includeInactive', 'includeRefused']) {
+    $(id).addEventListener('change', schedule);
+  }
+  $('prev').addEventListener('click', () => { offset = Math.max(0, offset - LIMIT); run(); });
+  $('next').addEventListener('click', () => { offset += LIMIT; run(); });
+  $('export').addEventListener('click', () => {
+    if (lastTotal > 200000 && !confirm(fmt(lastTotal) + ' 件を書き出します。よろしいですか？')) return;
+    location.href = '/api/export?' + buildParams();
+  });
+  $('reset').addEventListener('click', () => {
+    document.querySelectorAll('aside input[type=checkbox]').forEach((el) => { el.checked = false; });
+    $('keyword').value = '';
+    $('assignedFrom').value = '';
+    $('assignedTo').value = '';
+    $('industryConfidence').value = '0.7';
+    schedule();
+  });
+  run();
+}
+
+boot();
+</script>
+</body>
+</html>
