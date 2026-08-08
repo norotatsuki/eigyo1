@@ -73,7 +73,10 @@
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .04em; white-space: nowrap; }
   col.c-name { width: 26%; } col.c-ind { width: 14%; } col.c-addr { width: 33%; }
-  col.c-num { width: 16%; } col.c-date { width: 11%; }
+  col.c-num { width: 14%; } col.c-reach { width: 13%; }
+  .reach a { color: var(--accent); text-decoration: none; font-size: 12px; }
+  .reach a:hover { text-decoration: underline; }
+  .reach .none { color: var(--muted); font-size: 12px; }
   @media (max-width: 1200px) { .layout { grid-template-columns: 280px 1fr; } }
   td.num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
   td.name { font-weight: 500; }
@@ -153,6 +156,13 @@
     </fieldset>
 
     <fieldset>
+      <span class="lbl">接触経路</span>
+      <label class="check"><input type="checkbox" id="hasWebsite"> サイトが判明している先だけ</label>
+      <label class="check"><input type="checkbox" id="hasContactForm"> 問い合わせ先が判明している先だけ</label>
+      <div class="note">サイトは Common Crawl から発見して収集した分。まだ全社には行き渡っていません</div>
+    </fieldset>
+
+    <fieldset>
       <span class="lbl">対象</span>
       <label class="check"><input type="checkbox" id="includeInactive"> 閉鎖・除外された法人も含める</label>
       <label class="check"><input type="checkbox" id="includeRefused"> 営業お断りの先も含める</label>
@@ -176,11 +186,11 @@
     <div class="wrap">
       <table>
         <colgroup>
-          <col class="c-name"><col class="c-ind"><col class="c-addr"><col class="c-num"><col class="c-date">
+          <col class="c-name"><col class="c-ind"><col class="c-addr"><col class="c-reach"><col class="c-num">
         </colgroup>
         <thead>
           <tr>
-            <th>商号</th><th>業種</th><th>所在地</th><th>法人番号</th><th>指定日</th>
+            <th>商号</th><th>業種</th><th>所在地</th><th>接触経路</th><th>法人番号</th>
           </tr>
         </thead>
         <tbody id="rows"><tr><td colspan="5" class="empty">読み込み中…</td></tr></tbody>
@@ -219,6 +229,8 @@ function buildParams() {
   if (conf) p.set('industryConfidence', conf);
   if ($('assignedFrom').value) p.set('assignedFrom', $('assignedFrom').value);
   if ($('assignedTo').value) p.set('assignedTo', $('assignedTo').value);
+  if ($('hasWebsite').checked) p.set('hasWebsite', '1');
+  if ($('hasContactForm').checked) p.set('hasContactForm', '1');
   if ($('includeInactive').checked) p.set('includeInactive', '1');
   if ($('includeRefused').checked) p.set('includeRefused', '1');
   p.set('order', $('order').value);
@@ -237,8 +249,8 @@ function renderRows(rows) {
       r.name,
       null, // 業種はタグで入れる
       (r.post_code ? '〒' + r.post_code + ' ' : '') + r.address_full,
+      null, // 接触経路はリンクで入れる
       r.corporate_number,
-      r.assignment_date || '',
     ];
     cells.forEach((v, i) => {
       const td = document.createElement('td');
@@ -249,10 +261,31 @@ function renderRows(rows) {
           tag.textContent = r.industry_name;
           td.append(tag);
         }
+      } else if (i === 3) {
+        td.className = 'reach';
+        const links = [];
+        if (r.website_url) links.push(['サイト', r.website_url]);
+        if (r.contact_form_url) links.push(['問い合わせ', r.contact_form_url]);
+        if (links.length === 0) {
+          const s = document.createElement('span');
+          s.className = 'none';
+          s.textContent = '郵送のみ';
+          td.append(s);
+        } else {
+          links.forEach(([label, href], k) => {
+            if (k > 0) td.append(document.createTextNode(' / '));
+            const a = document.createElement('a');
+            a.href = href;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = label;
+            td.append(a);
+          });
+        }
       } else {
         td.textContent = v;
         if (i === 0) td.className = 'name';
-        if (i === 3 || i === 4) td.className = 'num';
+        if (i === 4) td.className = 'num';
       }
       tr.append(td);
     });
@@ -386,7 +419,8 @@ async function boot() {
   $('pref').addEventListener('change', () => { void refreshCities(); });
 
   for (const id of ['keyword']) $(id).addEventListener('input', schedule);
-  for (const id of ['industryConfidence', 'assignedFrom', 'assignedTo', 'order', 'includeInactive', 'includeRefused']) {
+  for (const id of ['industryConfidence', 'assignedFrom', 'assignedTo', 'order',
+                    'hasWebsite', 'hasContactForm', 'includeInactive', 'includeRefused']) {
     $(id).addEventListener('change', schedule);
   }
   $('prev').addEventListener('click', () => { offset = Math.max(0, offset - LIMIT); run(); });
