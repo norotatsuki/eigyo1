@@ -66,6 +66,27 @@ CREATE INDEX IF NOT EXISTS idx_corp_city      ON corporations(pref_code, city_co
 CREATE INDEX IF NOT EXISTS idx_corp_kind      ON corporations(kind);
 CREATE INDEX IF NOT EXISTS idx_corp_active    ON corporations(is_active, kind);
 CREATE INDEX IF NOT EXISTS idx_corp_namecore  ON corporations(name_core);
+
+-- 「営業対象の、この都道府県を、商号順に」を 1 本でまかなう索引。
+-- 画面で一番よく使う形であり、これが無いと
+--   件数 … 115 万行それぞれに本体を引きに行く (3.3 秒)
+--   一覧 … 115 万行を並べ替えてから先頭 50 件を取る (1.2 秒)
+-- になる。この順序なら索引を順になぞって 50 件で打ち切れる。
+CREATE INDEX IF NOT EXISTS idx_corp_active_pref_name
+  ON corporations(is_active, pref_code, name_core);
+
+-- 都道府県を選んでいないときの「商号順」用。
+-- 上の索引だけだと、地域を絞らない一覧で 500 万行の並べ替えに落ちる (実測 23 秒)。
+CREATE INDEX IF NOT EXISTS idx_corp_active_name
+  ON corporations(is_active, name_core);
+
+-- 「この都道府県の、この法人種別が何件か」を索引だけで数えるため
+-- (無いと 68 万行それぞれに本体を引きに行き 6.3 秒かかる)。
+--
+-- この索引があると最適化器が一覧でもこちらを選び、商号順に並べ直せなくなる。
+-- そのため一覧側は INDEXED BY で使う索引を明示している (src/search/query.ts)。
+CREATE INDEX IF NOT EXISTS idx_corp_active_pref_kind
+  ON corporations(is_active, pref_code, kind);
 CREATE INDEX IF NOT EXISTS idx_corp_assigned  ON corporations(assignment_date);
 CREATE INDEX IF NOT EXISTS idx_corp_post      ON corporations(post_code);
 

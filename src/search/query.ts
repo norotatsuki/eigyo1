@@ -80,12 +80,36 @@ interface BuiltWhere {
 }
 
 /** 全文検索を使わない場合の読み取り元。 */
-const FROM_PLAIN = `
-  FROM corporations c
+const fromPlain = (hint = ''): string => `
+  FROM corporations c${hint}
   LEFT JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
 
 /** 付加情報を一切使わない場合。500 万行に結合を張らずに済む。 */
-const FROM_CORP_ONLY = `FROM corporations c`;
+const fromCorpOnly = (hint = ''): string => `FROM corporations c${hint}`;
+
+const FROM_PLAIN = fromPlain();
+const FROM_CORP_ONLY = fromCorpOnly();
+
+/**
+ * 一覧を出すときに使う索引を明示する。
+ *
+ * 索引を足すたびに最適化器の選択が揺れ、同じ条件が 0 秒になったり 2.9 秒に
+ * なったりした。一覧は画面が最初に描くものなので、ここだけは選択を固定する。
+ * どちらの索引も末尾が name_core なので、商号順に読んで 50 件で打ち切れる。
+ *
+ * ただし業種などの付加情報で絞るときは指定しない。付加情報の側が
+ * ずっと選択的で (東京都の 1% しか残らないなど)、法人を商号順になぞると
+ * 50 件そろうまでに数千行を見ることになる。そこは最適化器に任せた方が速い。
+ */
+function listIndexHint(filter: SearchFilter, options: SearchOptions): string {
+  const orderBy = options.orderBy ?? 'name';
+  if (orderBy !== 'name') return '';
+  if (filter.activeOnly === false) return '';
+  if (usesProfile(filter)) return ''; // 付加情報側から回した方が速い
+  if ((filter.keyword?.normalize('NFKC').trim().length ?? 0) >= 3) return ''; // 全文検索が駆動側
+  if (filter.prefCodes?.length === 1) return ' INDEXED BY idx_corp_active_pref_name';
+  return ' INDEXED BY idx_corp_active_name';
+}
 
 /**
  * 全文検索を使う場合の読み取り元。
@@ -110,6 +134,17 @@ function placeholders(n: number): string {
   return new Array(n).fill('?').join(', ');
 }
 
+/**
+ * 前方一致を範囲に置き換えるための上限値。
+ * 末尾の 1 文字を次の文字に進める ('39' → '3:')。
+ */
+export function prefixUpperBound(prefix: string): string {
+  if (prefix === '') return '￿';
+  const head = prefix.slice(0, -1);
+  const last = prefix.charCodeAt(prefix.length - 1);
+  return head + String.fromCharCode(last + 1);
+}
+
 /** 付加情報の列を条件に使っているか。使っていなければ結合を省ける。 */
 function usesProfile(filter: SearchFilter): boolean {
   return Boolean(
@@ -127,12 +162,12 @@ function usesProfile(filter: SearchFilter): boolean {
 /**
  * @param forCount 件数だけを数える場合。付加情報の列を表示しないぶん結合を省ける
  */
-function buildWhere(filter: SearchFilter, forCount = false): BuiltWhere {
+function buildWhere(filter: SearchFilter, forCount = false, indexHint = ''): BuiltWhere {
   const clauses: string[] = [];
   const params: unknown[] = [];
   // 件数を数えるだけで付加情報を条件にも使っていないなら、結合そのものを省く
   const joinProfile = !forCount || usesProfile(filter);
-  let from = joinProfile ? FROM_PLAIN : FROM_CORP_ONLY;
+  let from = joinProfile ? fromPlain(indexHint) : fromCorpOnly(indexHint);
 
   // 索引は正規化済みの商号に張ってあるため、検索語にも同じ正規化をかける。
   // これが無いと半角「AI」で「ＡＩシステム開発」に当たらない。
@@ -190,10 +225,16 @@ function buildWhere(filter: SearchFilter, forCount = false): BuiltWhere {
   }
 
   if (filter.industryCodes?.length) {
-    // 大分類・中分類での指定を許すため前方一致
-    const ors = filter.industryCodes.map(() => 'p.industry_code LIKE ?').join(' OR ');
+    // 大分類・中分類での指定を許すため前方一致にするが、LIKE は索引を使えない。
+    // 「39 で始まる」を「'39' 以上 '3:' 未満」の範囲に書き換えると索引が効く
+    // (実測 6.2 秒 → 0.05 秒)。
+    const ors = filter.industryCodes
+      .map(() => '(p.industry_code >= ? AND p.industry_code < ?)')
+      .join(' OR ');
     clauses.push(`(${ors})`);
-    params.push(...filter.industryCodes.map((c) => `${c}%`));
+    for (const code of filter.industryCodes) {
+      params.push(code, prefixUpperBound(code));
+    }
   }
 
   if (filter.industryMinConfidence !== undefined) {
@@ -240,7 +281,7 @@ export function buildSelectSql(
   options: SearchOptions = {},
   columns: string = SELECT_COLUMNS,
 ): { sql: string; params: unknown[] } {
-  const where = buildWhere(filter);
+  const where = buildWhere(filter, false, listIndexHint(filter, options));
   return {
     sql: `SELECT ${columns} ${where.from} ${where.sql} ${orderClause(options.orderBy)}`,
     params: where.params,
@@ -261,11 +302,23 @@ function orderClause(orderBy: SearchOptions['orderBy']): string {
   }
 }
 
-/** 付加情報を使わない読み取り元に、付加情報の結合を足した形を返す。 */
-function withProfileJoin(from: string): string {
-  if (from === FROM_CORP_ONLY) return FROM_PLAIN;
-  if (from === FROM_FTS_CORP_ONLY) return FROM_FTS;
-  return from;
+/**
+ * お断りの件数を数えるための読み取り元。
+ *
+ * 付加情報の側から回すよう CROSS JOIN で固定する。お断りの行はごく少数で
+ * 索引が効くのに対し、法人の側から回すと 115 万行それぞれに結合を張ることになる
+ * (実測 4.1 秒 → 0.04 秒)。
+ */
+function refusedFrom(from: string): string {
+  if (from === FROM_FTS || from === FROM_FTS_CORP_ONLY) {
+    return `
+      FROM corporations_fts f
+      CROSS JOIN corporations c ON c.id = f.rowid
+      JOIN company_profiles p ON p.corporate_number = c.corporate_number`;
+  }
+  return `
+    FROM company_profiles p
+    CROSS JOIN corporations c ON c.corporate_number = p.corporate_number`;
 }
 
 /**
@@ -288,13 +341,12 @@ export function countCompanies(db: Db, filter: SearchFilter): number {
   }
 
   const base = buildWhere({ ...filter, excludeRefused: false }, true);
-  const refusedFrom = withProfileJoin(base.from);
   const refusedWhere = base.sql
     ? `${base.sql} AND p.solicitation_refused = 1`
     : 'WHERE p.solicitation_refused = 1';
   const sql = `
     SELECT (SELECT COUNT(*) ${base.from} ${base.sql})
-         - (SELECT COUNT(*) ${refusedFrom} ${refusedWhere}) AS n`;
+         - (SELECT COUNT(*) ${refusedFrom(base.from)} ${refusedWhere}) AS n`;
   const row = db.prepare(sql).get(...base.params, ...base.params) as { n: number };
   return row.n;
 }

@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openDb, rebuildFts, type Db } from '../../src/db/index.ts';
-import { buildSelectSql, countCompanies, searchCompanies, toCsvLines } from '../../src/search/query.ts';
+import {
+  buildSelectSql,
+  countCompanies,
+  prefixUpperBound,
+  searchCompanies,
+  toCsvLines,
+} from '../../src/search/query.ts';
 import { normalizeCompanyName } from '../../src/normalize/company-name.ts';
 
 interface Seed {
@@ -93,6 +99,18 @@ describe('絞り込み検索', () => {
 
   it('法人格で絞り込む', () => {
     expect(countCompanies(db, { corpForms: ['合同会社'] })).toBe(1);
+  });
+
+  it('前方一致の上限値は末尾の文字を 1 つ進める', () => {
+    expect(prefixUpperBound('39')).toBe('3:');
+    expect(prefixUpperBound('0')).toBe('1');
+    expect(prefixUpperBound('09')).toBe('0:');
+    // 上限は範囲の外側。前方一致する値はすべて下限以上・上限未満に収まる
+    expect('39' >= '39' && '39' < prefixUpperBound('39')).toBe(true);
+    expect('391' >= '39' && '391' < prefixUpperBound('39')).toBe(true);
+    expect('399' >= '39' && '399' < prefixUpperBound('39')).toBe(true);
+    expect('40' < prefixUpperBound('39')).toBe(false);
+    expect('38' >= '39').toBe(false);
   });
 
   it('業種コードは前方一致で照合し、中分類の指定を許す', () => {
@@ -211,6 +229,39 @@ describe('絞り込み検索', () => {
 
     it('お断りを含める指定なら引き算を使わない', () => {
       expect(countCompanies(db, { excludeRefused: false })).toBe(4);
+    });
+
+    // 索引を足すたびに最適化器の選択が揺れ、同じ一覧が 0 秒になったり 2.9 秒に
+    // なったりした。一覧は画面が最初に描くものなので選択を固定してある
+    describe('一覧で使う索引の明示', () => {
+      const hintOf = (f: Parameters<typeof buildSelectSql>[0], o = {}): string =>
+        buildSelectSql(f, o, 'c.corporate_number').sql;
+
+      it('都道府県を 1 つ選んだら県つきの索引を指定する', () => {
+        expect(hintOf({ prefCodes: ['13'] })).toContain('INDEXED BY idx_corp_active_pref_name');
+      });
+
+      it('都道府県を選ばない・複数選ぶときは商号だけの索引を指定する', () => {
+        expect(hintOf({})).toContain('INDEXED BY idx_corp_active_name');
+        expect(hintOf({ prefCodes: ['13', '27'] })).toContain('INDEXED BY idx_corp_active_name');
+      });
+
+      it('付加情報で絞るときは指定しない (そちらの方が選択的なため)', () => {
+        expect(hintOf({ prefCodes: ['13'], industryCodes: ['39'] })).not.toContain('INDEXED BY');
+        expect(hintOf({ employeesMin: 10 })).not.toContain('INDEXED BY');
+      });
+
+      it('全文検索・商号以外の並び順・閉鎖込みでは指定しない', () => {
+        expect(hintOf({ keyword: 'サンプル' })).not.toContain('INDEXED BY');
+        expect(hintOf({}, { orderBy: 'assigned_desc' })).not.toContain('INDEXED BY');
+        expect(hintOf({ activeOnly: false })).not.toContain('INDEXED BY');
+      });
+
+      it('指定した索引は実在し、問い合わせが通る', () => {
+        // 索引名を書き間違えると SQLite が実行時に落ちる。実際に走らせて確かめる
+        expect(() => searchCompanies(db, { prefCodes: ['13'] }, { limit: 5 })).not.toThrow();
+        expect(() => searchCompanies(db, {}, { limit: 5 })).not.toThrow();
+      });
     });
 
     it('語が無いときは全文検索表を読まない', () => {
