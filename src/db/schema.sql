@@ -149,6 +149,51 @@ CREATE INDEX IF NOT EXISTS idx_prof_site     ON company_profiles(website_url);
 CREATE INDEX IF NOT EXISTS idx_prof_refused  ON company_profiles(solicitation_refused);
 
 -- ---------------------------------------------------------------------------
+-- 発見したサイト
+--
+--   国税庁のデータに URL は無い。gBizINFO を使わずに接触経路を得るには、
+--   実在する企業サイトの側から集めて法人番号に突き合わせるしかない。
+--   出どころは Common Crawl の索引 (公開・無料)。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS web_hosts (
+  host            TEXT PRIMARY KEY,      -- example.co.jp (www は落とす)
+  source          TEXT NOT NULL,         -- commoncrawl / manual
+  discovered_at   TEXT NOT NULL,
+
+  -- 収集の状態
+  crawl_status    TEXT NOT NULL DEFAULT 'pending', -- pending / ok / failed / disallowed / skipped
+  crawled_at      TEXT,
+  http_status     INTEGER,
+  error           TEXT,
+
+  -- 収集で取れたもの
+  site_name       TEXT,                  -- サイトが名乗っている会社名
+  site_address    TEXT,
+  site_tel        TEXT,
+  contact_url     TEXT,                  -- 問い合わせページ
+  refused_text    TEXT,                  -- 営業お断りの文言 (見つかった場合)
+
+  -- 突き合わせ結果
+  corporate_number   TEXT,               -- 紐付いた法人番号
+  match_confidence   REAL,               -- 0.0-1.0
+  match_method       TEXT                -- name_exact / name_address / name_only
+);
+
+CREATE INDEX IF NOT EXISTS idx_hosts_status ON web_hosts(crawl_status);
+CREATE INDEX IF NOT EXISTS idx_hosts_corp   ON web_hosts(corporate_number);
+
+-- 索引の取得はページ単位で再開できるようにする (1153 ページある)
+CREATE TABLE IF NOT EXISTS host_discovery_pages (
+  source      TEXT NOT NULL,
+  collection  TEXT NOT NULL,   -- CC-MAIN-2025-05 など
+  pattern     TEXT NOT NULL,   -- *.co.jp
+  page        INTEGER NOT NULL,
+  hosts_found INTEGER NOT NULL,
+  fetched_at  TEXT NOT NULL,
+  PRIMARY KEY (source, collection, pattern, page)
+);
+
+-- ---------------------------------------------------------------------------
 -- 除外リスト — 絶対に接触しない先
 --
 --   法人番号を鍵にした「送らない」の一次資料。特定電子メール法の受信拒否
