@@ -9,7 +9,7 @@
 import { analyze, type Db } from '../../db/index.ts';
 import { invalidateMeta } from '../../search/meta.ts';
 import { divisionName } from './classification.ts';
-import { CORP_FORM_RULES, KEYWORD_RULES } from './rules.ts';
+import { CORP_FORM_RULES, KEYWORD_RULES, OVERRIDE_RULES } from './rules.ts';
 
 /** 推定の出典名。company_profiles.industry_source に入る値。 */
 export const SOURCE_NAME_INFERENCE = 'name_inference';
@@ -32,6 +32,18 @@ export interface Inference {
  * 商号の語は長いものから照合するため、「不動産鑑定」は「不動産」より先に当たる。
  */
 export function inferIndustry(nameCore: string, corpForm: string | null): Inference | null {
+  // 「一見 X に見えるが実は Y」を先に押さえる (獣医業を医療業にしない等)
+  for (const rule of OVERRIDE_RULES) {
+    if (nameCore.includes(rule.keyword)) {
+      return {
+        code: rule.code,
+        name: divisionName(rule.code),
+        confidence: rule.confidence,
+        matched: rule.keyword,
+      };
+    }
+  }
+
   let best: Inference | null = null;
 
   for (const rule of KEYWORD_RULES) {

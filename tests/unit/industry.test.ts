@@ -52,6 +52,44 @@ describe('inferIndustry', () => {
   it('根拠になった語を返す', () => {
     expect(infer('株式会社山田工務店')?.matched).toBe('工務店');
   });
+
+  it('獣医業は医療業ではなく技術サービス業に振る', () => {
+    // 実データに現れた表記。優先規則で先に押さえる
+    for (const name of [
+      'ai動物クリニック有限会社', '株式会社みどり動物病院', '株式会社宗谷動物医院',
+      '株式会社豊富産業動物診療所', '有限会社動物眼科アイ', '合同会社動物歯科医学研究所',
+      '有限会社いわて動物鍼灸センター', '合同会社ピジョン動物愛護病院',
+    ]) {
+      expect(infer(name)?.code, name).toBe('74');
+    }
+    // 人の医療は従来どおり
+    expect(infer('医療法人社団みどりクリニック')?.code).toBe('83');
+    expect(infer('医療法人社団滝沢歯科医院')?.code).toBe('83');
+  });
+
+  it('優先規則は法人格より強い', () => {
+    // 医療法人でも獣医なら 74
+    expect(infer('医療法人動物病院さくら')?.code).toBe('74');
+  });
+
+  it('実データで確かめた語を拾う', () => {
+    expect(infer('早田設備株式会社')?.code).toBe('08');
+    expect(infer('株式会社光和電工')?.code).toBe('08');
+    expect(infer('河原土建有限会社')?.code).toBe('06');
+    expect(infer('株式会社阿部建装')?.code).toBe('07');
+    expect(infer('因伯通運株式会社')?.code).toBe('44');
+    expect(infer('有限会社山本農場')?.code).toBe('01');
+    expect(infer('株式会社鳥取県倉吉自動車学校')?.code).toBe('82');
+    expect(infer('株式会社清水設計')?.code).toBe('74');
+  });
+
+  it('誤検出すると分かった語は拾わない', () => {
+    // 実データで中身を見て却下した語。再び足さないための歯止め
+    expect(infer('有限会社クレープハウス')).toBeNull();     // ハウス
+    expect(infer('株式会社サンプロジェクト')).toBeNull();   // ロジ
+    expect(infer('株式会社ライトスタッフ')).toBeNull();     // スタッフ
+    expect(infer('あい土地建物株式会社')).toBeNull();       // 地建
+  });
 });
 
 describe('分類マスタ', () => {
