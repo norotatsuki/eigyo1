@@ -6,7 +6,8 @@
  * そのため保存時に必ず出典 (industry_source) と確信度を残し、
  * 上書きの可否を出典で判断できるようにする。
  */
-import type { Db } from '../../db/index.ts';
+import { analyze, type Db } from '../../db/index.ts';
+import { invalidateMeta } from '../../search/meta.ts';
 import { divisionName } from './classification.ts';
 import { CORP_FORM_RULES, KEYWORD_RULES } from './rules.ts';
 
@@ -172,6 +173,10 @@ export function classifyAll(db: Db, options: ClassifyOptions = {}): ClassifyResu
   const skipped = db
     .prepare(`SELECT COUNT(*) AS n FROM company_profiles WHERE industry_source IN (${AUTHORITATIVE_LIST})`)
     .get() as { n: number };
+
+  // 大量に書き込んだので統計を取り直し、画面の選択肢の控えは作り直させる
+  analyze(db);
+  invalidateMeta(db);
 
   return { scanned, inferred, skippedAuthoritative: skipped.n, byCode, byConfidence };
 }
