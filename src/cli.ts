@@ -13,6 +13,8 @@ import { openDb, defaultDbPath, type Db } from './db/index.ts';
 import { loadZenken } from './ingest/nta/load.ts';
 import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
 import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
+import { classifyAll } from './enrich/industry/classify.ts';
+import { divisionName, majorDivisionOf } from './enrich/industry/classification.ts';
 import {
   countCompanies,
   searchCompanies,
@@ -29,6 +31,9 @@ const USAGE = `
     --region <地域>    全国 (既定) / 都道府県名 / 国外
     --db <パス>        データベースの位置 (既定: data/eigyo.db)
 
+  classify 商号と法人格から業種を推定して付加情報に書き込む
+    --min-confidence <値>  この確信度未満は保存しない (既定 0.5)
+
   stats    取り込み内容の内訳を表示する
 
   search   条件で絞り込んで表示する
@@ -44,6 +49,8 @@ const USAGE = `
     --companies            会社だけに絞る (301,302,303,304,305 と同じ)
     --form <法人格,…>      株式会社 など
     --industry <コード,…>  日本標準産業分類 (前方一致)
+    --industry-confidence <値>
+                           業種の確信度の下限。営業に使うなら 0.7 を薦める
     --capital-min <円>     資本金の下限
     --employees-min <人>   従業員数の下限
     --assigned-from <日付> 法人番号指定年月日の下限 (YYYY-MM-DD)
@@ -59,12 +66,14 @@ const USAGE = `
 const options = {
   region: { type: 'string' },
   db: { type: 'string' },
+  'min-confidence': { type: 'string' },
   keyword: { type: 'string' },
   pref: { type: 'string' },
   kind: { type: 'string' },
   companies: { type: 'boolean' },
   form: { type: 'string' },
   industry: { type: 'string' },
+  'industry-confidence': { type: 'string' },
   'capital-min': { type: 'string' },
   'employees-min': { type: 'string' },
   'assigned-from': { type: 'string' },
@@ -108,6 +117,8 @@ function toFilter(v: Values): SearchFilter {
   if (forms) filter.corpForms = forms;
   const industry = list(v.industry);
   if (industry) filter.industryCodes = industry;
+  const industryConfidence = num(v['industry-confidence']);
+  if (industryConfidence !== undefined) filter.industryMinConfidence = industryConfidence;
   const capitalMin = num(v['capital-min']);
   if (capitalMin !== undefined) filter.capitalMin = capitalMin;
   const employeesMin = num(v['employees-min']);
@@ -158,6 +169,48 @@ async function cmdIngest(db: Db, v: Values): Promise<void> {
       `読取 ${fmt(result.rowsRead)} / 投入 ${fmt(result.rowsUpserted)} / ` +
       `除外 ${fmt(result.rowsSkipped)} — ${sec} 秒`,
   );
+}
+
+function cmdClassify(db: Db, v: Values): void {
+  const minConfidence = num(v['min-confidence']) ?? 0.5;
+  const started = Date.now();
+  console.error(`[推定] 商号と法人格から業種を推定します (確信度 ${minConfidence} 以上を保存)`);
+
+  const r = classifyAll(db, {
+    minConfidence,
+    onProgress: (scanned, inferred) => {
+      const sec = ((Date.now() - started) / 1000).toFixed(0);
+      console.error(`[推定] 走査 ${fmt(scanned)} 件 / 推定 ${fmt(inferred)} 件 (${sec} 秒)`);
+    },
+  });
+
+  const rate = r.scanned > 0 ? ((r.inferred / r.scanned) * 100).toFixed(1) : '0.0';
+  console.error(
+    `[推定] 完了 走査 ${fmt(r.scanned)} / 推定 ${fmt(r.inferred)} 件 (${rate}%) — ` +
+      `${((Date.now() - started) / 1000).toFixed(1)} 秒`,
+  );
+  if (r.skippedAuthoritative > 0) {
+    console.error(`[推定] 権威ある出典が入っていた ${fmt(r.skippedAuthoritative)} 件は変更していません`);
+  }
+
+  console.log('');
+  console.log('確信度の分布 — 実際の営業に使うなら 0.7 以上を薦める');
+  const bands = [...r.byConfidence.entries()].sort((a, b) => b[0] - a[0]);
+  const reliable = bands.filter(([c]) => c >= 0.7).reduce((s, [, n]) => s + n, 0);
+  for (const [band, n] of bands) {
+    const note = band >= 0.7 ? '確か' : '手がかり程度 (「工業」「商事」など幅の広い語)';
+    console.log(`  ${band.toFixed(1)}  ${fmt(n).padStart(10)}  ${note}`);
+  }
+  console.log(`  → 0.7 以上は ${fmt(reliable)} 件`);
+
+  console.log('');
+  console.log('業種の内訳 (上位 20)');
+  const sorted = [...r.byCode.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+  for (const [code, n] of sorted) {
+    const major = majorDivisionOf(code);
+    const label = `${code} ${divisionName(code)}`;
+    console.log(`  ${major ?? '-'}  ${label.padEnd(34, '　')} ${fmt(n).padStart(10)}`);
+  }
 }
 
 function cmdStats(db: Db): void {
@@ -258,6 +311,9 @@ async function main(): Promise<void> {
     switch (command) {
       case 'ingest':
         await cmdIngest(db, v);
+        break;
+      case 'classify':
+        cmdClassify(db, v);
         break;
       case 'stats':
         cmdStats(db);

@@ -102,6 +102,13 @@ describe('絞り込み検索', () => {
     expect(countCompanies(db, { industryCodes: ['39', '09'] })).toBe(2);
   });
 
+  it('業種の確信度の下限で絞り込む', () => {
+    db.prepare("UPDATE company_profiles SET industry_confidence = 0.5 WHERE corporate_number = '1000000000002'").run();
+    db.prepare("UPDATE company_profiles SET industry_confidence = 0.9 WHERE corporate_number = '1000000000001'").run();
+    expect(countCompanies(db, { industryMinConfidence: 0.7 })).toBe(1);
+    expect(countCompanies(db, { industryMinConfidence: 0.4 })).toBe(2);
+  });
+
   it('資本金と従業員数の下限で絞り込む', () => {
     expect(countCompanies(db, { capitalMin: 5_000_000 })).toBe(1);
     expect(countCompanies(db, { employeesMin: 10 })).toBe(1);

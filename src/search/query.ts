@@ -23,6 +23,8 @@ export interface SearchFilter {
   corpForms?: string[];
   /** 日本標準産業分類。前方一致で照合するため大分類・中分類でも指定できる */
   industryCodes?: string[];
+  /** 業種の確信度の下限。商号からの推定は幅があるため、実際の営業では 0.7 以上を薦める */
+  industryMinConfidence?: number;
   capitalMin?: number;
   capitalMax?: number;
   employeesMin?: number;
@@ -136,6 +138,10 @@ function buildWhere(filter: SearchFilter): BuiltWhere {
     params.push(...filter.industryCodes.map((c) => `${c}%`));
   }
 
+  if (filter.industryMinConfidence !== undefined) {
+    clauses.push('p.industry_confidence >= ?');
+    params.push(filter.industryMinConfidence);
+  }
   if (filter.capitalMin !== undefined) {
     clauses.push('p.capital >= ?');
     params.push(filter.capitalMin);
