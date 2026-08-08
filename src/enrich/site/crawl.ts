@@ -98,6 +98,20 @@ async function robotsAllows(origin: string, paths: readonly string[]): Promise<b
  * 同名の会社は全国に何十社もあるため、住所の都道府県まで一致して初めて
  * 高い確信度を与える。名前だけの一致は候補が 1 社のときに限る。
  */
+/**
+ * 住所の文字列から郵便番号 7 桁を取り出す。国税庁側はハイフン無しで持っている。
+ *
+ * 区切りに使われる横棒は 1 種類ではない。NFKC で全角ハイフンは半角になるが、
+ * 「−」(U+2212) や「―」「‐」はそのまま残るため、まとめて受ける。
+ */
+const DASHES = '-\\u2010-\\u2015\\u2212\\uFF0D';
+const POSTAL_RE = new RegExp(`(?:〒\\s*)?(\\d{3})[${DASHES}\\s]?(\\d{4})(?!\\d)`);
+
+export function postalCodeOf(address: string): string | null {
+  const m = address.normalize('NFKC').match(POSTAL_RE);
+  return m ? `${m[1]}${m[2]}` : null;
+}
+
 export function matchCorporation(
   db: Db,
   extracted: Extracted,
@@ -108,16 +122,30 @@ export function matchCorporation(
 
   const candidates = db
     .prepare(
-      `SELECT corporate_number AS n, pref_name AS pref, address_full AS addr
+      `SELECT corporate_number AS n, pref_name AS pref, address_full AS addr, post_code AS post
          FROM corporations WHERE name_core = ? AND is_active = 1 LIMIT 50`,
     )
-    .all(core) as Array<{ n: string; pref: string; addr: string }>;
+    .all(core) as Array<{ n: string; pref: string; addr: string; post: string }>;
   if (candidates.length === 0) return null;
 
-  const address = extracted.address ?? '';
+  const address = (extracted.address ?? '').normalize('NFKC');
+
+  // 郵便番号が一致すれば、住所の書き方の違いに左右されず特定できる。
+  // 国税庁側の所在地は全角、サイト側は半角で書かれることが多く、
+  // 文字列の比較だけでは取りこぼすため、まず番号で照合する。
+  const postal = address ? postalCodeOf(address) : null;
+  if (postal) {
+    const byPost = candidates.filter((c) => c.post === postal);
+    if (byPost.length === 1) {
+      return { corporateNumber: byPost[0]!.n, confidence: 0.97, method: 'name_postal' };
+    }
+  }
+
   if (address) {
-    // 都道府県 + 市区町村まで一致するものを最優先
-    const exact = candidates.filter((c) => c.addr.length > 0 && address.includes(c.addr.slice(0, 8)));
+    // 都道府県 + 市区町村まで一致するものを次点に (全角半角を揃えてから比べる)
+    const exact = candidates.filter(
+      (c) => c.addr.length > 0 && address.includes(c.addr.normalize('NFKC').slice(0, 8)),
+    );
     if (exact.length === 1) {
       return { corporateNumber: exact[0]!.n, confidence: 0.95, method: 'name_address' };
     }

@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openDb, type Db } from '../../src/db/index.ts';
-import { matchCorporation } from '../../src/enrich/site/crawl.ts';
+import { matchCorporation, postalCodeOf } from '../../src/enrich/site/crawl.ts';
 import { hostOf, hostsFromIndexPage } from '../../src/ingest/commoncrawl/hosts.ts';
 import { normalizeCompanyName } from '../../src/normalize/company-name.ts';
 
-function insert(db: Db, number: string, name: string, pref: string, address: string): void {
+function insert(db: Db, number: string, name: string, pref: string, address: string, post = ''): void {
   const { normalized, core, corpForm } = normalizeCompanyName(name);
   db.prepare(
     `INSERT INTO corporations
        (corporate_number, name, kind, pref_name, city_name, street_number,
         pref_code, city_code, post_code, latest, search_excluded,
         name_normalized, name_core, corp_form, address_full, is_active, source_date, ingested_at)
-     VALUES (?, ?, 301, ?, '', '', '13', '101', '', 1, 0, ?, ?, ?, ?, 1, '2026-07-31', 'now')`,
-  ).run(number, name, pref, normalized, core, corpForm, address);
+     VALUES (?, ?, 301, ?, '', '', '13', '101', ?, 1, 0, ?, ?, ?, ?, 1, '2026-07-31', 'now')`,
+  ).run(number, name, pref, post, normalized, core, corpForm, address);
 }
 
 describe('hostOf', () => {
@@ -43,6 +43,19 @@ describe('hostsFromIndexPage', () => {
   });
 });
 
+describe('postalCodeOf', () => {
+  it('いろいろな書き方から 7 桁を取り出す', () => {
+    expect(postalCodeOf('〒107-0062 東京都港区')).toBe('1070062');
+    expect(postalCodeOf('〒1070062')).toBe('1070062');
+    expect(postalCodeOf('107-0062')).toBe('1070062');
+    expect(postalCodeOf('〒１０７−００６２')).toBe('1070062');
+  });
+
+  it('郵便番号が無ければ取らない', () => {
+    expect(postalCodeOf('東京都港区南青山2-2-15')).toBeNull();
+  });
+});
+
 describe('matchCorporation', () => {
   let db: Db;
 
@@ -56,6 +69,15 @@ describe('matchCorporation', () => {
 
   const site = (name: string | null, address: string | null = null) => ({
     name, address, tel: null, contactUrl: null, refusedText: null,
+  });
+
+  it('郵便番号が一致すれば書き方の違いに関わらず特定する', () => {
+    // 国税庁側は全角、サイト側は半角で書かれることが多い。番号なら揺れない
+    insert(db, '1000000000010', '株式会社ゆれ', '東京都', '東京都港区南青山２丁目２－１５', '1070062');
+    insert(db, '1000000000011', '株式会社ゆれ', '東京都', '東京都渋谷区渋谷１－１', '1500002');
+    const r = matchCorporation(db, site('株式会社ゆれ', '〒107-0062 東京都港区南青山2-2-15'));
+    expect(r?.corporateNumber).toBe('1000000000010');
+    expect(r?.method).toBe('name_postal');
   });
 
   it('商号と住所が一致すれば高い確信度で紐付ける', () => {
