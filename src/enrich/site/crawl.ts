@@ -1,8 +1,8 @@
 /**
  * 企業サイトを訪ねて事実を集め、法人番号に突き合わせる。
  *
- * 相手の負担を増やさないこと。1 サイトあたり最大 3 ページ、
- * robots.txt に従い、同じ相手に連続して当たらない。
+ * 相手の負担を増やさないこと。1 サイトあたり最大 3 ページ
+ * (トップ / 会社概要 / 問い合わせ)、robots.txt に従い、間隔を空ける。
  */
 import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
@@ -235,6 +235,17 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
           refusedText: info.refusedText ?? more.refusedText,
         };
         break; // 1 サイトにつき追加 1 ページまで
+      }
+    }
+
+    // 営業お断りの表示は問い合わせページに書かれていることが多い。
+    // トップと会社概要だけを見ていたとき、279 サイトで検出 0 件だった。
+    // 見落とすと断られている相手に送ることになるので、ここは必ず確かめる。
+    if (info.contactUrl && !info.refusedText) {
+      const contactPage = await fetchText(info.contactUrl);
+      if (contactPage && contactPage.body !== '') {
+        const onContact = extractFromHtml(contactPage.body, info.contactUrl);
+        if (onContact.refusedText) info.refusedText = onContact.refusedText;
       }
     }
 
