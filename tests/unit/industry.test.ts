@@ -154,6 +154,17 @@ describe('classifyAll', () => {
     expect(row.industry_confidence).toBeGreaterThan(0.5);
   });
 
+  it('画面の選択肢の控えを作り直しておく', () => {
+    // 捨てるだけにすると、次に画面を開いた人が集計を待たされる
+    classifyAll(db);
+    const cached = db.prepare('SELECT payload FROM meta_cache WHERE id = 1').get() as
+      | { payload: string }
+      | undefined;
+    expect(cached).toBeDefined();
+    const meta = JSON.parse(cached!.payload) as { industries: Array<{ code: string }> };
+    expect(meta.industries.map((i) => i.code)).toContain('06');
+  });
+
   it('何度実行しても結果が変わらない', () => {
     const first = classifyAll(db);
     const second = classifyAll(db);

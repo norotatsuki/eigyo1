@@ -124,6 +124,12 @@
       <div class="scroll-list" id="pref"></div>
     </fieldset>
 
+    <fieldset id="cityBox" hidden>
+      <span class="lbl">市区町村</span>
+      <div class="scroll-list" id="city" style="max-height:170px"></div>
+      <div class="note" id="cityNote"></div>
+    </fieldset>
+
     <fieldset>
       <span class="lbl">法人種別</span>
       <div class="scroll-list" id="kind" style="max-height:150px"></div>
@@ -206,6 +212,7 @@ function buildParams() {
   if (kw) p.set('keyword', kw);
   for (const v of checkedValues('industry')) p.append('industry', v);
   for (const v of checkedValues('pref')) p.append('pref', v);
+  for (const v of checkedValues('city')) p.append('city', v);
   for (const v of checkedValues('kind')) p.append('kind', v);
   const conf = $('industryConfidence').value;
   if (conf) p.set('industryConfidence', conf);
@@ -291,6 +298,31 @@ function schedule() {
   timer = setTimeout(run, 250);
 }
 
+// 市区町村は全国で 1900 を超えるため、都道府県を 1 つに絞ったときだけ出す。
+// 複数県を選んでいると同名の町が並んで選べないので、その場合も出さない。
+let cityGeneration = 0;
+
+async function refreshCities() {
+  const mine = ++cityGeneration;
+  const prefs = checkedValues('pref');
+  const box = $('cityBox');
+
+  // 取得を待たずに今すぐ空にする。別の県の市区町村が選ばれたまま
+  // 検索が走ってしまうのを防ぐ (取得に 250ms 以上かかると実際に起きる)
+  $('city').replaceChildren();
+  if (prefs.length !== 1) {
+    box.hidden = true;
+    return;
+  }
+  $('cityNote').textContent = '読み込み中…';
+  box.hidden = false;
+
+  const cities = await (await fetch('/api/cities?pref=' + encodeURIComponent(prefs[0]))).json();
+  if (mine !== cityGeneration) return; // 待っている間に県が変わっていたら捨てる
+  fillList('city', cities, 'code');
+  $('cityNote').textContent = cities.length + ' 市区町村';
+}
+
 function fillList(containerId, items, valueKey) {
   const box = $(containerId);
   box.replaceChildren(...items.map((it) => {
@@ -346,6 +378,8 @@ async function boot() {
   fillIndustries(meta.industries);
   fillList('pref', meta.prefectures, 'code');
   fillList('kind', meta.kinds, 'code');
+  // 都道府県を変えたら市区町村を出し直す
+  $('pref').addEventListener('change', () => { void refreshCities(); });
 
   for (const id of ['keyword']) $(id).addEventListener('input', schedule);
   for (const id of ['industryConfidence', 'assignedFrom', 'assignedTo', 'order', 'includeInactive', 'includeRefused']) {
@@ -363,6 +397,7 @@ async function boot() {
     $('assignedFrom').value = '';
     $('assignedTo').value = '';
     $('industryConfidence').value = '0.7';
+    void refreshCities();
     schedule();
   });
   run();

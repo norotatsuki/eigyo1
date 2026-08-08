@@ -27,6 +27,8 @@ export interface Meta {
   kinds: Choice[];
   corpForms: Choice[];
   industries: IndustryChoice[];
+  /** 都道府県コード → その県の市区町村。全国で 1900 ほどなので控えに含めてよい */
+  cities: Record<string, Choice[]>;
   /** 業種が入っている件数 (確信度 0.7 以上) */
   industryReliable: number;
 }
@@ -149,18 +151,32 @@ function computeMeta(db: Db): Meta {
     kinds,
     corpForms,
     industries,
+    cities: computeCities(db),
     industryReliable: reliable.n,
   };
 }
 
-/** 指定した都道府県の市区町村。選ばれてから引く (全国分は 1900 件を超えるため)。 */
-export function loadCities(db: Db, prefCode: string): Choice[] {
-  return db
+/**
+ * 全都道府県の市区町村を 1 回の走査で数える。
+ *
+ * 選ばれるたびに県ごとに引くと東京都で 2 秒かかる。全国でも 1900 ほどしかないので、
+ * まとめて数えて控えに載せてしまう方が、画面の反応も速く実装も単純になる。
+ */
+function computeCities(db: Db): Record<string, Choice[]> {
+  const rows = db
     .prepare(
-      `SELECT city_code AS code, MIN(city_name) AS label, COUNT(*) AS count
+      `SELECT pref_code AS pref, city_code AS code, MIN(city_name) AS label, COUNT(*) AS count
          FROM corporations
-        WHERE is_active = 1 AND pref_code = ? AND city_code <> ''
-        GROUP BY city_code ORDER BY city_code`,
+        WHERE is_active = 1 AND pref_code <> '' AND city_code <> ''
+        GROUP BY pref_code, city_code
+        ORDER BY pref_code, city_code`,
     )
-    .all(prefCode) as Choice[];
+    .all() as Array<Choice & { pref: string }>;
+
+  const byPref: Record<string, Choice[]> = {};
+  for (const { pref, code, label, count } of rows) {
+    if (!label) continue;
+    (byPref[pref] ??= []).push({ code, label, count });
+  }
+  return byPref;
 }

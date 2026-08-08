@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { Db } from '../db/index.ts';
-import { loadCities, loadMeta, type Meta } from '../search/meta.ts';
+import { loadMeta, type Meta } from '../search/meta.ts';
 import {
   countCompanies,
   searchCompanies,
@@ -104,7 +104,7 @@ function handle(db: Db, meta: Meta, req: IncomingMessage, res: ServerResponse): 
 
   if (url.pathname === '/api/cities') {
     const pref = q.get('pref');
-    sendJson(res, 200, pref ? loadCities(db, pref) : []);
+    sendJson(res, 200, (pref && meta.cities[pref]) || []);
     return;
   }
 

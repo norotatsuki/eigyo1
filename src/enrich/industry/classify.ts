@@ -7,7 +7,7 @@
  * 上書きの可否を出典で判断できるようにする。
  */
 import { analyze, type Db } from '../../db/index.ts';
-import { invalidateMeta } from '../../search/meta.ts';
+import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import { divisionName } from './classification.ts';
 import { CORP_FORM_RULES, KEYWORD_RULES, OVERRIDE_RULES } from './rules.ts';
 
@@ -186,9 +186,12 @@ export function classifyAll(db: Db, options: ClassifyOptions = {}): ClassifyResu
     .prepare(`SELECT COUNT(*) AS n FROM company_profiles WHERE industry_source IN (${AUTHORITATIVE_LIST})`)
     .get() as { n: number };
 
-  // 大量に書き込んだので統計を取り直し、画面の選択肢の控えは作り直させる
+  // 大量に書き込んだので統計を取り直す。
+  // 画面の選択肢の控えもここで作り直しておく。捨てるだけにすると、
+  // 次に画面を開いた人が 40 秒待たされる (待つならここで待つ方がよい)
   analyze(db);
   invalidateMeta(db);
+  loadMeta(db);
 
   return { scanned, inferred, skippedAuthoritative: skipped.n, byCode, byConfidence };
 }
