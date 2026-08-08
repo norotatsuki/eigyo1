@@ -14,6 +14,8 @@ import { loadZenken } from './ingest/nta/load.ts';
 import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
 import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
+import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
+import { crawlPendingHosts } from './enrich/site/crawl.ts';
 import { applyGate, recordOutreach, CHANNEL_POLICY, type Channel } from './outreach/gate.ts';
 import {
   addSuppressions, countSuppressions, removeSuppression, summarizeOutreach,
@@ -44,6 +46,14 @@ const USAGE = `
 
   serve    画面を出す (127.0.0.1 のみ。社外からは届かない)
     --port <番号>          待受ポート (既定 5173)
+
+  discover ホスト名を集める (Common Crawl の公開索引。トークン不要)
+    --pages <数>           取得するページ数 (既定 10 / 全体で 1153 ページ)
+    --collection <版>      索引の版 (既定 CC-MAIN-2025-05)
+
+  crawl    集めたホストを訪ねて接触先を取り出し、法人番号に突き合わせる
+    --limit <数>           訪ねる件数 (既定 50)
+    --delay <ミリ秒>       1 サイトごとの間隔 (既定 1500)
 
   suppress 除外リスト (絶対に接触しない先) を扱う
     --add <法人番号,…>     除外に積む
@@ -101,6 +111,9 @@ const options = {
   'min-confidence': { type: 'string' },
   port: { type: 'string' },
   labels: { type: 'boolean' },
+  pages: { type: 'string' },
+  collection: { type: 'string' },
+  delay: { type: 'string' },
   add: { type: 'string' },
   remove: { type: 'string' },
   reason: { type: 'string' },
@@ -276,6 +289,51 @@ function cmdClassify(db: Db, v: Values): void {
     const label = `${code} ${divisionName(code)}`;
     console.log(`  ${major ?? '-'}  ${label.padEnd(34, '　')} ${fmt(n).padStart(10)}`);
   }
+}
+
+async function cmdDiscover(db: Db, v: Values): Promise<void> {
+  const pages = num(v.pages) ?? 10;
+  const collection = asString(v.collection) ?? DEFAULT_COLLECTION;
+  console.error(`[発見] ${collection} から ${pages} ページ分のホスト名を集めます`);
+  try {
+    const total = await fetchPageCount(collection, DEFAULT_PATTERN);
+    console.error(`[発見] この索引には ${fmt(total)} ページあります`);
+  } catch {
+    console.error('[発見] ページ総数を取得できませんでした (続行します)');
+  }
+
+  const r = await discoverHosts(db, {
+    collection, pages,
+    onProgress: (page, found, inserted) =>
+      console.error(`[発見] ページ ${page}: ホスト ${fmt(found)} / 新規 ${fmt(inserted)}`),
+  });
+  console.error(
+    `[発見] 完了 ${r.pagesFetched} ページ / 新規 ${fmt(r.hostsInserted)} 件 / ` +
+      `累計 ${fmt(r.totalHosts)} 件` + (r.failures > 0 ? ` / 失敗 ${r.failures} ページ` : ''),
+  );
+}
+
+async function cmdCrawl(db: Db, v: Values): Promise<void> {
+  const limit = num(v.limit) ?? 50;
+  const delayMs = num(v.delay) ?? 1500;
+  const pending = db.prepare("SELECT COUNT(*) AS n FROM web_hosts WHERE crawl_status = 'pending'").get() as { n: number };
+  console.error(`[収集] 未訪問 ${fmt(pending.n)} 件のうち ${fmt(limit)} 件を訪ねます (間隔 ${delayMs}ms)`);
+
+  const started = Date.now();
+  const r = await crawlPendingHosts(db, {
+    limit, delayMs,
+    onProgress: (done, matched) => {
+      if (done % 10 === 0) console.error(`[収集] ${fmt(done)} 件 / 紐付き ${fmt(matched)} 件`);
+    },
+  });
+  const sec = ((Date.now() - started) / 1000).toFixed(0);
+  console.log(`訪問 ${fmt(r.visited)} 件 — ${sec} 秒`);
+  console.log(`  取得できた          ${fmt(r.ok).padStart(6)}`);
+  console.log(`  接続できなかった    ${fmt(r.failed).padStart(6)}`);
+  console.log(`  robots.txt で不可   ${fmt(r.disallowed).padStart(6)}`);
+  console.log(`  法人番号に紐付いた  ${fmt(r.matched).padStart(6)}`);
+  console.log(`  問い合わせ先が判明  ${fmt(r.contactFound).padStart(6)}`);
+  console.log(`  営業お断りを検出    ${fmt(r.refusedFound).padStart(6)}`);
 }
 
 function cmdSuppress(db: Db, v: Values): void {
@@ -511,6 +569,12 @@ async function main(): Promise<void> {
         break;
       case 'export':
         cmdExport(db, v, base);
+        break;
+      case 'discover':
+        await cmdDiscover(db, v);
+        break;
+      case 'crawl':
+        await cmdCrawl(db, v);
         break;
       case 'suppress':
         cmdSuppress(db, v);
