@@ -70,10 +70,28 @@ export interface DiscoverResult {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 索引に要求を出す。応答が無いまま待ち続けないよう、必ず時間を区切る。
+ *
+ * 区切りが無いと、混雑した索引が応答を返さないときに永久に待つ。
+ * 実測: 発見処理が 28 分間 1 ページも進まないまま止まっていた。
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
+async function fetchIndex(url: string): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { headers: { 'user-agent': USER_AGENT }, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 索引のページ総数を尋ねる。 */
 export async function fetchPageCount(collection: string, pattern: string): Promise<number> {
   const url = `${INDEX_BASE}/${collection}-index?url=${encodeURIComponent(pattern)}&output=json&showNumPages=true`;
-  const res = await fetch(url, { headers: { 'user-agent': USER_AGENT } });
+  const res = await fetchIndex(url);
   if (!res.ok) throw new Error(`索引のページ数を取得できません: HTTP ${res.status}`);
   const body = (await res.json()) as { pages?: number };
   if (typeof body.pages !== 'number') throw new Error('索引の応答にページ数がありません');
@@ -142,7 +160,7 @@ export async function discoverHosts(db: Db, options: DiscoverOptions = {}): Prom
     for (let attempt = 0; attempt < retries && !succeeded; attempt++) {
       if (attempt > 0) await sleep(retryWaitMs * attempt);
       try {
-        const res = await fetch(url, { headers: { 'user-agent': USER_AGENT } });
+        const res = await fetchIndex(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = await res.text();
         // 混雑時は本文が HTML のエラーページになる。JSON でなければ失敗として扱う

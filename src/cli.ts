@@ -16,6 +16,7 @@ import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
 import { crawlPendingHosts, rematchHosts, scrubContactUrls } from './enrich/site/crawl.ts';
+import { DEFAULT_EDITION, discoverFromDomainList } from './ingest/commoncrawl/domains.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
 import { enrichWithLlm } from './enrich/llm/enrich.ts';
 import { GbizClient, type GbizSearch } from './ingest/gbizinfo/client.ts';
@@ -59,6 +60,7 @@ const USAGE = `
     --pages <数>           取得するページ数 (既定 10 / 全体で 1153 ページ)
     --collection <版>      索引の版 (既定 CC-MAIN-2025-05)
 
+  domains  Common Crawl のドメイン一覧から企業サイトを集める (索引より速い)
   rematch  収集済みのデータだけで突き合わせをやり直す (サイトは訪ねない)
   scrub    送ってはいけない問い合わせ先 (SNS・採用窓口など) を宛先から外す
 
@@ -166,6 +168,8 @@ const options = {
   labels: { type: 'boolean' },
   pages: { type: 'string' },
   collection: { type: 'string' },
+  edition: { type: 'string' },
+  suffix: { type: 'string' },
   delay: { type: 'string' },
   channel: { type: 'string' },
   template: { type: 'string' },
@@ -530,6 +534,24 @@ function cmdRematch(db: Db): void {
   }
 }
 
+async function cmdDomains(db: Db, v: Values): Promise<void> {
+  const edition = typeof v.edition === 'string' ? v.edition : DEFAULT_EDITION;
+  const suffix = typeof v.suffix === 'string' ? v.suffix : '.co.jp';
+  console.error(`[発見] ${edition} の一覧から ${suffix} を集めます (2 GB を流し読みします)`);
+
+  const started = Date.now();
+  const r = await discoverFromDomainList(db, {
+    edition, suffix, limit: num(v.limit),
+    onProgress: (read, found, inserted) => {
+      console.error(`[発見] 読み ${fmt(read)} 行 / 該当 ${fmt(found)} / 新規 ${fmt(inserted)}`);
+    },
+  });
+  console.log(
+    `読み ${fmt(r.linesRead)} 行 / 該当 ${fmt(r.found)} 件 / 新規 ${fmt(r.inserted)} 件 / 累計 ${fmt(r.totalHosts)} 件` +
+    ` — ${((Date.now() - started) / 1000).toFixed(0)} 秒`,
+  );
+}
+
 function cmdScrub(db: Db): void {
   console.error('[点検] 集めてある問い合わせ先を見直します');
   const r = scrubContactUrls(db);
@@ -883,6 +905,9 @@ async function main(): Promise<void> {
         break;
       case 'discover':
         await cmdDiscover(db, v);
+        break;
+      case 'domains':
+        await cmdDomains(db, v);
         break;
       case 'scrub':
         cmdScrub(db);
