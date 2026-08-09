@@ -18,6 +18,8 @@ import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } fr
 import { crawlPendingHosts, rematchHosts } from './enrich/site/crawl.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
 import { enrichWithLlm } from './enrich/llm/enrich.ts';
+import { GbizClient, type GbizSearch } from './ingest/gbizinfo/client.ts';
+import { enrichFromGbiz, importFromSearch } from './ingest/gbizinfo/ingest.ts';
 import { trimForLlm } from './enrich/llm/extract.ts';
 import { applyGate, recordOutreach, CHANNEL_POLICY, type Channel } from './outreach/gate.ts';
 import { CONFIG_PATH, PRESET_DAILY_CAP, checkChannelReady, configTemplate, loadConfig } from './outreach/config.ts';
@@ -58,6 +60,19 @@ const USAGE = `
     --collection <版>      索引の版 (既定 CC-MAIN-2025-05)
 
   rematch  収集済みのデータだけで突き合わせをやり直す (サイトは訪ねない)
+
+  gbiz     gBizINFO (経済産業省) から取り込む
+    --search               条件を gBizINFO に投げて、当てはまる法人を取り込む
+                           (売上・従業員数・資本金は手元に無いのでこちらを使う)
+      --revenue-min/max <円>   売上高
+      --employees-min/max <人> 従業員数
+      --capital-min/max <円>   資本金
+      --pref <コード>          都道府県
+      --max-pages <数>         取得ページ数 (既定 5)
+    --enrich               手元の絞り込み結果を 1 件ずつ照会して補完する
+      --limit <数>             照会件数 (既定 100)
+    ※ トークンは環境変数 GBIZ_API_TOKEN から読みます
+      https://info.gbiz.go.jp/hojin/various_registration/form で取得
 
   llm      収集済みの本文を LLM に読ませ、取りこぼしを埋める (サイトは訪ねない)
     --limit <数>           対象の件数 (既定 50)
@@ -157,6 +172,10 @@ const options = {
   classify: { type: 'boolean' },
   model: { type: 'string' },
   estimate: { type: 'boolean' },
+  search: { type: 'boolean' },
+  enrich: { type: 'boolean' },
+  'max-pages': { type: 'string' },
+  'capital-max': { type: 'string' },
   add: { type: 'string' },
   remove: { type: 'string' },
   reason: { type: 'string' },
@@ -227,6 +246,8 @@ function toFilter(v: Values, base: SearchFilter | null = null): SearchFilter {
   if (industryConfidence !== undefined) filter.industryMinConfidence = industryConfidence;
   const capitalMin = num(v['capital-min']);
   if (capitalMin !== undefined) filter.capitalMin = capitalMin;
+  const capitalMax = num(v['capital-max']);
+  if (capitalMax !== undefined) filter.capitalMax = capitalMax;
   const employeesMin = num(v['employees-min']);
   if (employeesMin !== undefined) filter.employeesMin = employeesMin;
   const employeesMax = num(v['employees-max']);
@@ -368,6 +389,61 @@ async function cmdDiscover(db: Db, v: Values): Promise<void> {
     `[発見] 完了 ${r.pagesFetched} ページ / 新規 ${fmt(r.hostsInserted)} 件 / ` +
       `累計 ${fmt(r.totalHosts)} 件` + (r.failures > 0 ? ` / 失敗 ${r.failures} ページ` : ''),
   );
+}
+
+async function cmdGbiz(db: Db, v: Values, base: SearchFilter | null): Promise<void> {
+  let client: GbizClient;
+  try {
+    client = new GbizClient();
+  } catch (err) {
+    console.error(`[gBiz] ${err instanceof Error ? err.message : String(err)}`);
+    console.error('[gBiz] 動作確認だけなら GBIZ_API_TOKEN に仕様書公開の確認用トークンを入れられます');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (v.search === true) {
+    const params: GbizSearch = {};
+    const set = (k: keyof GbizSearch, n: number | undefined): void => {
+      if (n !== undefined) (params as Record<string, unknown>)[k] = n;
+    };
+    set('net_sales_summary_of_business_results_from', num(v['revenue-min']));
+    set('net_sales_summary_of_business_results_to', num(v['revenue-max']));
+    set('employee_number_from', num(v['employees-min']));
+    set('employee_number_to', num(v['employees-max']));
+    set('capital_stock_from', num(v['capital-min']));
+    set('capital_stock_to', num(v['capital-max']));
+    const pref = list(v.pref)?.[0];
+    if (pref) params.prefecture = pref;
+
+    console.error(`[gBiz] 条件を投げます: ${JSON.stringify(params)}`);
+    const r = await importFromSearch(db, client, params, {
+      maxPages: num(v['max-pages']) ?? 5,
+      onProgress: (page, found) => console.error(`[gBiz] ${page} ページ目 / 累計 ${fmt(found)} 件`),
+    });
+    console.log(`gBizINFO から ${fmt(r.found)} 件 (${r.pages} ページ)`);
+    console.log(`  手元のマスタにあった  ${fmt(r.inMaster)}`);
+    console.log(`  付加情報を取り込んだ  ${fmt(r.imported)}`);
+    if (r.found > r.inMaster) {
+      console.log(`  ※ ${fmt(r.found - r.inMaster)} 件は手元に無い法人 (国税庁データが唯一の正なので取り込まない)`);
+    }
+    return;
+  }
+
+  const r = await enrichFromGbiz(db, client, {
+    ...(base || v.pref || v.industry ? { scope: toFilter(v, base) } : {}),
+    ...(num(v.limit) !== undefined ? { limit: num(v.limit)! } : {}),
+    onProgress: (done, filled) => {
+      if (done % 20 === 0) console.error(`[gBiz] ${fmt(done)} 件照会 / ${fmt(filled)} 件で値が入った`);
+    },
+  });
+  console.log(`照会 ${fmt(r.queried)} 件 / 応答 ${fmt(r.responded)} 件`);
+  console.log(`  資本金が入った  ${fmt(r.filled.capital).padStart(6)}`);
+  console.log(`  従業員数        ${fmt(r.filled.employees).padStart(6)}`);
+  console.log(`  企業HP          ${fmt(r.filled.url).padStart(6)}`);
+  console.log(`  設立年月日      ${fmt(r.filled.founded).padStart(6)}`);
+  console.log(`  中身が空        ${fmt(r.empty).padStart(6)}  ← 国の調達・補助金・特許に関わりが無い法人`);
+  if (r.errors > 0) console.log(`  応答が得られず  ${fmt(r.errors).padStart(6)}`);
 }
 
 async function cmdLlm(db: Db, v: Values, base: SearchFilter | null): Promise<void> {
@@ -797,6 +873,9 @@ async function main(): Promise<void> {
         break;
       case 'rematch':
         cmdRematch(db);
+        break;
+      case 'gbiz':
+        await cmdGbiz(db, v, base);
         break;
       case 'llm':
         await cmdLlm(db, v, base);
