@@ -20,6 +20,7 @@ import {
   repairRepresentatives, resetFailedHosts, scrubContactUrls,
 } from './enrich/site/crawl.ts';
 import { DEFAULT_EDITION, discoverFromDomainList } from './ingest/commoncrawl/domains.ts';
+import { runToCompletion } from './pipeline/complete.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
 import { enrichWithLlm } from './enrich/llm/enrich.ts';
 import { GbizClient, type GbizSearch } from './ingest/gbizinfo/client.ts';
@@ -66,6 +67,11 @@ const USAGE = `
     --collection <版>      索引の版 (既定 CC-MAIN-2025-05)
 
   domains  Common Crawl のドメイン一覧から企業サイトを集める (索引より速い)
+  complete 集め切るまでを一続きで回す (中断しても続きから)
+    --target <数>          送れる先がこの数に達したら止める
+    --concurrency <数>     同時に当たる相手の数 (既定 48)
+    --batch <数>           1 区切りで訪ねる件数 (既定 20000)
+    --no-revisit           古い抽出のまま集めた先を訪ね直さない
   rematch  収集済みのデータだけで突き合わせをやり直す (サイトは訪ねない)
   scrub    送ってはいけない問い合わせ先 (SNS・採用窓口など) を宛先から外す
   retry    繋がらなかった先を訪問対象に戻す (取得の仕方を直したとき)
@@ -224,6 +230,8 @@ const options = {
   'has-email': { type: 'boolean' },
   reachable: { type: 'boolean' },
   target: { type: 'string' },
+  batch: { type: 'string' },
+  'no-revisit': { type: 'boolean' },
   'has-representative': { type: 'boolean' },
   hiring: { type: 'boolean' },
   role: { type: 'string' },
@@ -582,6 +590,28 @@ async function cmdDomains(db: Db, v: Values): Promise<void> {
     `読み ${fmt(r.linesRead)} 行 / 該当 ${fmt(r.found)} 件 / 新規 ${fmt(r.inserted)} 件 / 累計 ${fmt(r.totalHosts)} 件` +
     ` — ${((Date.now() - started) / 1000).toFixed(0)} 秒`,
   );
+}
+
+async function cmdComplete(db: Db, v: Values): Promise<void> {
+  const started = Date.now();
+  console.error('[完了まで] 収集 → 再挑戦 → 訪ね直し → 業種 → 再照合 → 点検 の順に回します');
+  console.error('[完了まで] 途中で止めても、次に実行すれば続きから始まります');
+
+  const r = await runToCompletion(db, {
+    ...(num(v.target) !== undefined ? { target: num(v.target)! } : {}),
+    ...(num(v.concurrency) !== undefined ? { concurrency: num(v.concurrency)! } : {}),
+    ...(num(v.batch) !== undefined ? { batchSize: num(v.batch)! } : {}),
+    revisit: v['no-revisit'] !== true,
+    onStage: (stage, detail) => {
+      const min = ((Date.now() - started) / 60000).toFixed(0);
+      console.error(`[${stage}] ${detail} (${min} 分経過)`);
+    },
+  });
+
+  const min = ((Date.now() - started) / 60000).toFixed(0);
+  console.log(`訪問 ${fmt(r.visited)} 件 / 再挑戦 ${fmt(r.retried)} 件 / 訪ね直し ${fmt(r.revisited)} 件 — ${min} 分`);
+  console.log(`送れる先 ${fmt(r.qualified)} 件`);
+  if (r.stoppedAtTarget) console.log('目標に到達したので止めました');
 }
 
 function cmdRetry(db: Db, v: Values): void {
@@ -959,6 +989,9 @@ async function main(): Promise<void> {
         break;
       case 'domains':
         await cmdDomains(db, v);
+        break;
+      case 'complete':
+        await cmdComplete(db, v);
         break;
       case 'retry':
         cmdRetry(db, v);
