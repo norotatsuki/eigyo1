@@ -144,6 +144,36 @@ export function pickCompanyName(title: string): string | null {
   return null;
 }
 
+/** 文の切れ目になる助詞。社名の中にも現れうるので、これだけで捨ててはいけない。 */
+const PARTICLES = /(なら|をお探し|はこちら|のための|による|への|の|を|は|で|へ|から|より)/g;
+
+/**
+ * 後株の社名から宣伝文句を削った形を、短い順に返す。
+ *
+ * 「事務所をお探しならバイリンク株式会社」の題名から
+ * 「バイリンク株式会社」を得るためのもの。
+ *
+ * ただし助詞は社名の中にも現れる (「の」を含む後株の実在社名は 3,684 社ある)。
+ * 削った形が正しいかは呼び出す側が国税庁のデータで確かめること。
+ * ここは候補を出すだけで、正しさは保証しない。
+ */
+export function trimmedNameVariants(name: string): string[] {
+  const m = name.match(new RegExp(`^(.+?)(${CORP_FORM_RE})$`));
+  if (!m?.[1]) return [];
+  const [, prefix, form] = m;
+
+  const variants: string[] = [];
+  for (const hit of prefix!.matchAll(PARTICLES)) {
+    const cut = hit.index + hit[0].length;
+    const rest = prefix!.slice(cut);
+    // 削る側も残る側も 2 文字以上あること。
+    // 「みのり株式会社」を「り株式会社」にしてしまわないための下限
+    if (cut >= 2 && rest.length >= 2) variants.push(`${rest}${form}`);
+  }
+  // 短い (= よく削れた) ものから試す
+  return variants.sort((a, b) => a.length - b.length);
+}
+
 /** 著作権表示から社名を拾う。題名が使えないサイトでも footer には出ていることが多い。 */
 export function nameFromCopyright(text: string): string | null {
   const m = text.match(

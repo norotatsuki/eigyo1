@@ -7,7 +7,7 @@
 import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
-import { contactUrlRejectReason, extractFromHtml, toText, type Extracted } from './extract.ts';
+import { contactUrlRejectReason, extractFromHtml, toText, trimmedNameVariants, type Extracted } from './extract.ts';
 import { extractScale } from './scale.ts';
 import { extractRecruit, findRecruitUrl, type Recruit } from './recruit.ts';
 
@@ -145,48 +145,98 @@ export function matchCorporation(
   extracted: Extracted,
 ): { corporateNumber: string; confidence: number; method: string } | null {
   if (!extracted.name) return null;
-  const { core } = normalizeCompanyName(extracted.name);
+  const direct = matchByName(db, extracted.name, extracted.address ?? null);
+  if (direct) return direct;
+
+  // 題名から取った社名に宣伝文句が残っていることがある
+  // (「事務所をお探しならバイリンク株式会社」)。国税庁に無い商号だったときに限り、
+  // 助詞で削った形を試す。削った形は誤りうるので、住所が一致したものだけ採る。
+  for (const variant of trimmedNameVariants(extracted.name)) {
+    const m = matchByName(db, variant, extracted.address ?? null);
+    if (m && m.method !== 'name_only') {
+      return { corporateNumber: m.corporateNumber, confidence: m.confidence - 0.1, method: `trimmed_${m.method}` };
+    }
+  }
+  return null;
+}
+
+function matchByName(
+  db: Db,
+  name: string,
+  rawAddress: string | null,
+): { corporateNumber: string; confidence: number; method: string } | null {
+  const { core, corpForm } = normalizeCompanyName(name);
   if (core.length < 2) return null;
 
-  const candidates = db
-    .prepare(
-      `SELECT corporate_number AS n, pref_name AS pref, address_full AS addr, post_code AS post
-         FROM corporations WHERE name_core = ? AND is_active = 1 LIMIT 50`,
-    )
-    .all(core) as Array<{ n: string; pref: string; addr: string; post: string }>;
-  if (candidates.length === 0) return null;
+  const address = (rawAddress ?? '').normalize('NFKC');
+  const postal = address ? postalCodeOf(address) : null;
 
-  const address = (extracted.address ?? '').normalize('NFKC');
+  /**
+   * 法人格が違えば別の法人である。
+   * 「合同会社スリー」と「株式会社スリー」、「BE株式会社」と「有限会社Ｂ・Ｅ」は
+   * 名寄せキーが同じになるだけで、別の会社。実際に 45 件を取り違えていた。
+   *
+   * ただし郵便番号まで一致する先は同じ会社とみなす。
+   * 有限会社から株式会社への移行をサイト側が直していないだけのことがある。
+   */
+  const formAgrees = (masterForm: string | null): boolean =>
+    !corpForm || !masterForm || corpForm === masterForm;
 
   // 郵便番号が一致すれば、住所の書き方の違いに左右されず特定できる。
   // 国税庁側の所在地は全角、サイト側は半角で書かれることが多く、
   // 文字列の比較だけでは取りこぼすため、まず番号で照合する。
-  const postal = address ? postalCodeOf(address) : null;
+  //
+  // 番号での絞り込みは SQL 側で行う。手元に読み出してから絞ると、
+  // 同名が多い商号 (「株式会社ＺＥＲＯ」は 497 社ある) で
+  // 読み出す上限に当たり、正しい 1 社が候補に入らないまま落ちる。
   if (postal) {
-    const byPost = candidates.filter((c) => c.post === postal);
+    const byPost = db
+      .prepare(
+        `SELECT corporate_number AS n FROM corporations
+          WHERE name_core = ? AND is_active = 1 AND post_code = ? LIMIT 2`,
+      )
+      .all(core, postal) as Array<{ n: string }>;
     if (byPost.length === 1) {
       return { corporateNumber: byPost[0]!.n, confidence: 0.97, method: 'name_postal' };
     }
   }
 
-  if (address) {
-    // 都道府県 + 市区町村まで一致するものを次点に (全角半角を揃えてから比べる)
-    const exact = candidates.filter(
-      (c) => c.addr.length > 0 && address.includes(c.addr.normalize('NFKC').slice(0, 8)),
-    );
-    if (exact.length === 1) {
-      return { corporateNumber: exact[0]!.n, confidence: 0.95, method: 'name_address' };
-    }
-    const byPref = candidates.filter((c) => c.pref && address.includes(c.pref));
-    if (byPref.length === 1) {
-      return { corporateNumber: byPref[0]!.n, confidence: 0.85, method: 'name_pref' };
-    }
-    if (byPref.length > 1) return null; // 同じ県に同名が複数。決められないので取らない
+  const all = db
+    .prepare(
+      `SELECT corporate_number AS n, pref_name AS pref, city_name AS city,
+              address_full AS addr, corp_form AS form
+         FROM corporations WHERE name_core = ? AND is_active = 1 LIMIT 1000`,
+    )
+    .all(core) as Array<{ n: string; pref: string; city: string; addr: string; form: string | null }>;
+  const candidates = all.filter((c) => formAgrees(c.form));
+  if (candidates.length === 0) return null;
+
+  // 住所が無いなら、全国で 1 社しかない商号のときだけ紐付けてよい
+  if (!address) {
+    if (candidates.length > 1) return null;
+    return { corporateNumber: candidates[0]!.n, confidence: 0.6, method: 'name_only' };
   }
 
-  // 住所が取れなかった場合、全国で 1 社しかない商号なら紐付けてよい
-  if (candidates.length === 1) {
-    return { corporateNumber: candidates[0]!.n, confidence: 0.6, method: 'name_only' };
+  // 都道府県 + 市区町村まで一致するものを次点に (全角半角を揃えてから比べる)
+  const exact = candidates.filter(
+    (c) => c.addr.length > 0 && address.includes(c.addr.normalize('NFKC').slice(0, 8)),
+  );
+  if (exact.length === 1) {
+    return { corporateNumber: exact[0]!.n, confidence: 0.95, method: 'name_address' };
+  }
+
+  const byPref = candidates.filter((c) => c.pref && address.includes(c.pref));
+  if (byPref.length === 1) {
+    return { corporateNumber: byPref[0]!.n, confidence: 0.85, method: 'name_pref' };
+  }
+  if (byPref.length > 1) return null; // 同じ県に同名が複数。決められないので取らない
+
+  // 都道府県を書かないサイトは多い (「大阪市中央区城見1-2-27」など)。
+  // 政令指定都市や区の名前は県をまたいで重複しないものが大半なので、
+  // 市区町村だけでも 1 社に定まるならそれを採る。
+  const byCity = candidates.filter((c) => c.city.length >= 2 && address.includes(c.city));
+  if (byCity.length === 1) {
+    return { corporateNumber: byCity[0]!.n, confidence: 0.8, method: 'name_city' };
   }
   return null;
 }
@@ -195,6 +245,8 @@ export interface RematchResult {
   scanned: number;
   matched: number;
   changed: number;
+  /** 前は紐付いていたが、判定を直した結果 外れた先 */
+  cleared: number;
   byMethod: Record<string, number>;
 }
 
@@ -280,7 +332,7 @@ export function rematchHosts(db: Db): RematchResult {
        updated_at = excluded.updated_at`,
   );
 
-  const result: RematchResult = { scanned: 0, matched: 0, changed: 0, byMethod: {} };
+  const result: RematchResult = { scanned: 0, matched: 0, changed: 0, cleared: 0, byMethod: {} };
   const now = new Date().toISOString();
 
   const run = db.transaction(() => {
@@ -290,7 +342,15 @@ export function rematchHosts(db: Db): RematchResult {
         name: r.site_name, address: r.site_address, tel: r.site_tel, email: r.site_email,
         contactUrl: r.contact_url, refusedText: r.refused_text,
       });
-      if (!m) continue;
+      if (!m) {
+        // 前は紐付いていたが、今の判定では紐付かない先。
+        // 取り違えを直したときにここへ落ちる。古い紐付けを残してはいけない
+        if (r.current) {
+          update.run(null, null, null, r.host);
+          result.cleared++;
+        }
+        continue;
+      }
       result.matched++;
       result.byMethod[m.method] = (result.byMethod[m.method] ?? 0) + 1;
       if (m.corporateNumber !== r.current || m.method !== r.currentMethod) result.changed++;

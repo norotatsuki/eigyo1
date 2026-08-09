@@ -1,19 +1,24 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openDb, type Db } from '../../src/db/index.ts';
 import { matchCorporation, postalCodeOf } from '../../src/enrich/site/crawl.ts';
+import { trimmedNameVariants } from '../../src/enrich/site/extract.ts';
 import { hostOf, hostsFromIndexPage } from '../../src/ingest/commoncrawl/hosts.ts';
 import { normalizeCompanyName } from '../../src/normalize/company-name.ts';
 
-function insert(db: Db, number: string, name: string, pref: string, address: string, post = ''): void {
+function insert(
+  db: Db, number: string, name: string, pref: string, address: string, post = '', city = '',
+): void {
   const { normalized, core, corpForm } = normalizeCompanyName(name);
   db.prepare(
     `INSERT INTO corporations
        (corporate_number, name, kind, pref_name, city_name, street_number,
         pref_code, city_code, post_code, latest, search_excluded,
         name_normalized, name_core, corp_form, address_full, is_active, source_date, ingested_at)
-     VALUES (?, ?, 301, ?, '', '', '13', '101', ?, 1, 0, ?, ?, ?, ?, 1, '2026-07-31', 'now')`,
-  ).run(number, name, pref, post, normalized, core, corpForm, address);
+     VALUES (?, ?, 301, ?, ?, '', '13', '101', ?, 1, 0, ?, ?, ?, ?, 1, '2026-07-31', 'now')`,
+  ).run(number, name, pref, city, post, normalized, core, corpForm, address);
 }
+
+const bare = { tel: null, email: null, contactUrl: null, refusedText: null };
 
 describe('hostOf', () => {
   it('URL からホスト名を取り出し www を落とす', () => {
@@ -124,5 +129,83 @@ describe('matchCorporation', () => {
 
   it('法人マスタに無い会社名は紐付けない', () => {
     expect(matchCorporation(db, site('株式会社存在しない会社', '東京都港区'))).toBeNull();
+  });
+});
+
+describe('紐付けの取り違えを防ぐ', () => {
+  let db: Db;
+  beforeEach(() => {
+    db = openDb(':memory:');
+  });
+
+  // 実データで 45 件を取り違えていた。名寄せキーは法人格を落とすので
+  // 「合同会社スリー」と「株式会社スリー」が同じキーになる
+  it('法人格が違えば別の法人として扱う', () => {
+    insert(db, '1000000000001', '株式会社スリー', '東京都', '東京都港区1-1');
+    const m = matchCorporation(db, { name: '合同会社スリー', address: null, ...bare });
+    expect(m).toBeNull();
+  });
+
+  it('法人格が同じなら紐付ける', () => {
+    insert(db, '1000000000001', '株式会社スリー', '東京都', '東京都港区1-1');
+    expect(matchCorporation(db, { name: '株式会社スリー', address: null, ...bare })?.method).toBe('name_only');
+  });
+
+  it('サイトに法人格が書かれていなければ問わない', () => {
+    insert(db, '1000000000001', '株式会社スリー', '東京都', '東京都港区1-1');
+    expect(matchCorporation(db, { name: 'スリー', address: null, ...bare })).not.toBeNull();
+  });
+
+  // 「株式会社ＺＥＲＯ」は全国に 497 社ある。手元に 50 件だけ読み出して
+  // 絞り込んでいたため、正しい 1 社が候補に入らないまま落ちていた
+  it('同名が読み出しの上限を超えても郵便番号で特定できる', () => {
+    for (let i = 0; i < 120; i++) {
+      insert(db, `10000000${String(i).padStart(5, '0')}`, '株式会社ゼロ', '東京都', '東京都港区1-1', `100${String(i).padStart(4, '0')}`);
+    }
+    const m = matchCorporation(db, {
+      name: '株式会社ゼロ', address: '〒100-0119 東京都港区1-1', ...bare,
+    });
+    expect(m?.corporateNumber).toBe('1000000000119');
+    expect(m?.method).toBe('name_postal');
+  });
+
+  // 「大阪市中央区城見1-2-27」のように 都道府県を書かないサイトは多い
+  it('都道府県が書かれていなくても市区町村で絞れる', () => {
+    insert(db, '1000000000001', '株式会社アートプラス', '大阪府', '大阪府大阪市中央区城見1-2', '', '大阪市中央区');
+    insert(db, '1000000000002', '株式会社アートプラス', '東京都', '東京都港区5-5', '', '港区');
+    const m = matchCorporation(db, {
+      name: 'アートプラス株式会社', address: '大阪市中央区城見1-2-27 クリスタルタワー16F', ...bare,
+    });
+    expect(m?.corporateNumber).toBe('1000000000001');
+    expect(m?.method).toBe('name_city');
+  });
+});
+
+describe('題名に残った宣伝文句を削る', () => {
+  it('助詞のうしろを社名の候補にする', () => {
+    expect(trimmedNameVariants('事務所をお探しならバイリンク株式会社')).toContain('バイリンク株式会社');
+    expect(trimmedNameVariants('UAV測量の塩見測量設計株式会社')).toContain('塩見測量設計株式会社');
+  });
+
+  it('社名の一部を削り落とさない', () => {
+    // 「の」を含む後株の実在社名は 3,684 社ある。短すぎる切り方はしない
+    expect(trimmedNameVariants('みのり株式会社')).toEqual([]);
+    expect(trimmedNameVariants('株式会社ものづくり')).toEqual([]);
+  });
+
+  it('削った形は住所で裏が取れたときだけ採る', () => {
+    const db = openDb(':memory:');
+    insert(db, '1000000000001', '株式会社バイリンク', '東京都', '東京都港区1-1', '1050001');
+
+    // 住所が無ければ採らない (削り方が正しい保証がないため)
+    expect(matchCorporation(db, { name: '事務所をお探しならバイリンク株式会社', address: null, ...bare })).toBeNull();
+
+    // 郵便番号まで一致すれば採る。確信度は元より下げる
+    const m = matchCorporation(db, {
+      name: '事務所をお探しならバイリンク株式会社', address: '〒105-0001 東京都港区1-1', ...bare,
+    });
+    expect(m?.corporateNumber).toBe('1000000000001');
+    expect(m?.method).toBe('trimmed_name_postal');
+    expect(m!.confidence).toBeLessThan(0.97);
   });
 });

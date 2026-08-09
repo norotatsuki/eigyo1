@@ -524,7 +524,7 @@ function cmdRematch(db: Db): void {
   console.error('[再照合] 収集済みのデータで突き合わせをやり直します (サイトは訪ねません)');
   const started = Date.now();
   const r = rematchHosts(db);
-  console.log(`走査 ${fmt(r.scanned)} 件 / 紐付き ${fmt(r.matched)} 件 / 変わった ${fmt(r.changed)} 件 — ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
+  console.log(`走査 ${fmt(r.scanned)} 件 / 紐付き ${fmt(r.matched)} 件 / 変わった ${fmt(r.changed)} 件 / 外した ${fmt(r.cleared)} 件 — ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
   for (const [m, n] of Object.entries(r.byMethod).sort((a, b) => b[1] - a[1])) {
     console.log(`  ${m.padEnd(16, ' ')} ${fmt(n).padStart(8)}`);
   }
