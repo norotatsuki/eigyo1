@@ -87,7 +87,8 @@ const USAGE = `
 
   crawl    集めたホストを訪ねて接触先を取り出し、法人番号に突き合わせる
     --limit <数>           訪ねる件数 (既定 50)
-    --delay <ミリ秒>       1 サイトごとの間隔 (既定 1500)
+    --delay <ミリ秒>       1 本あたりの間隔 (既定 300)
+    --concurrency <数>     同時に当たる相手の数 (既定 6)。相手は全て別のサイト
 
   init-config 送信の設定ファイルのひな形を作る
     --preset gmail|workspace   Gmail / Google Workspace の SMTP を埋めた形で作る
@@ -175,6 +176,7 @@ const options = {
   search: { type: 'boolean' },
   enrich: { type: 'boolean' },
   'max-pages': { type: 'string' },
+  concurrency: { type: 'string' },
   'capital-max': { type: 'string' },
   add: { type: 'string' },
   remove: { type: 'string' },
@@ -529,13 +531,14 @@ function cmdRematch(db: Db): void {
 
 async function cmdCrawl(db: Db, v: Values): Promise<void> {
   const limit = num(v.limit) ?? 50;
-  const delayMs = num(v.delay) ?? 1500;
+  const delayMs = num(v.delay) ?? 300;
+  const concurrency = num(v.concurrency) ?? 6;
   const pending = db.prepare("SELECT COUNT(*) AS n FROM web_hosts WHERE crawl_status = 'pending'").get() as { n: number };
-  console.error(`[収集] 未訪問 ${fmt(pending.n)} 件のうち ${fmt(limit)} 件を訪ねます (間隔 ${delayMs}ms)`);
+  console.error(`[収集] 未訪問 ${fmt(pending.n)} 件のうち ${fmt(limit)} 件を訪ねます (同時 ${concurrency} / 間隔 ${delayMs}ms)`);
 
   const started = Date.now();
   const r = await crawlPendingHosts(db, {
-    limit, delayMs,
+    limit, delayMs, concurrency,
     onProgress: (done, matched) => {
       if (done % 10 === 0) console.error(`[収集] ${fmt(done)} 件 / 紐付き ${fmt(matched)} 件`);
     },

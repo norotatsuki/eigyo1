@@ -29,9 +29,25 @@ const PROFILE_PATHS = ['/company/', '/company.html', '/about/', '/corporate/', '
 
 export interface CrawlOptions {
   limit?: number;
-  /** 1 サイトごとの間隔 (ミリ秒) */
+  /** 1 サイトごとの間隔 (ミリ秒)。同時実行するので 1 本あたりの間隔 */
   delayMs?: number;
+  /** 同時に当たる相手の数。相手は全て別のサイトなので、1 社への負荷は増えない */
+  concurrency?: number;
+  /** 同じ相手に続けて要求するときの間隔 (ミリ秒) */
+  politeMs?: number;
   onProgress?: (done: number, matched: number) => void;
+}
+
+/** 1 サイト分の収集結果。通信だけを行い、書き込みは別で行う。 */
+interface Collected {
+  host: string;
+  origin: string;
+  status: 'ok' | 'failed' | 'disallowed';
+  httpStatus?: number | null;
+  error?: string;
+  info?: Extracted;
+  pageText?: string;
+  recruit?: Recruit | null;
 }
 
 export interface CrawlResult {
@@ -259,7 +275,9 @@ export function rematchHosts(db: Db): RematchResult {
 /** 収集していない先を 1 件ずつ訪ねる。 */
 export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Promise<CrawlResult> {
   const limit = options.limit ?? 50;
-  const delayMs = options.delayMs ?? 1500;
+  const delayMs = options.delayMs ?? 300;
+  const concurrency = options.concurrency ?? 6;
+  const politeMs = options.politeMs ?? 300;
 
   const hosts = db
     .prepare("SELECT host FROM web_hosts WHERE crawl_status = 'pending' ORDER BY host LIMIT ?")
@@ -307,34 +325,35 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     hiringFound: 0,
   };
 
-  for (const { host } of hosts) {
-    result.visited++;
+  /**
+   * 1 サイト分を集める。ここは通信だけで、データベースには触らない。
+   *
+   * 相手 1 社への作法は変えない。robots.txt に従い、見るのは 3 ページまで、
+   * 同じ相手への続けざまの要求には間隔を空ける。
+   * 速くなるのは「別々の相手に同時に当たる」からであって、
+   * 1 社への当たり方を強めているわけではない。
+   */
+  const collect = async (host: string): Promise<Collected> => {
     const origin = `https://${host}`;
-    const now = new Date().toISOString();
-
     if (!(await robotsAllows(origin, ['/', ...PROFILE_PATHS]))) {
-      result.disallowed++;
-      update.run('disallowed', now, null, 'robots.txt により不可', null, null, null, null, null, null, null, null, null, null, host);
-      await sleep(delayMs);
-      continue;
+      return { host, origin, status: 'disallowed', error: 'robots.txt により不可' };
     }
 
     const top = await fetchText(`${origin}/`);
     if (!top || top.body === '') {
-      result.failed++;
-      update.run('failed', now, top?.status ?? null, top ? 'HTML を取得できません' : '接続できません',
-        null, null, null, null, null, null, null, null, null, null, host);
-      await sleep(delayMs);
-      continue;
+      return {
+        host, origin, status: 'failed',
+        httpStatus: top?.status ?? null,
+        error: top ? 'HTML を取得できません' : '接続できません',
+      };
     }
 
     let info = extractFromHtml(top.body, `${origin}/`);
-    // 本文を残しておく。あとから LLM に読ませるとき、訪ね直さずに済む
     let pageText = toText(top.body);
 
-    // 会社概要ページがあれば、そちらの方が正確
     if (!info.name || !info.address) {
       for (const path of PROFILE_PATHS) {
+        await sleep(politeMs);
         const page = await fetchText(`${origin}${path}`);
         if (!page || page.body === '') continue;
         const more = extractFromHtml(page.body, `${origin}${path}`);
@@ -351,18 +370,18 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
       }
     }
 
-    // 採用ページを 1 枚だけ見る。募集職種が「誰に当てるか」の手がかりになる
     let recruit: Recruit | null = null;
     const recruitUrl = findRecruitUrl(top.body, `${origin}/`);
     if (recruitUrl) {
+      await sleep(politeMs);
       const page = await fetchText(recruitUrl);
       if (page && page.body !== '') recruit = extractRecruit(toText(page.body));
     }
 
-    // 営業お断りの表示は問い合わせページに書かれていることが多い。
-    // トップと会社概要だけを見ていたとき、279 サイトで検出 0 件だった。
-    // 見落とすと断られている相手に送ることになるので、ここは必ず確かめる。
+    // 営業お断りは問い合わせページに書かれていることが多い。見落とすと
+    // 断られている相手に送ることになるので、ここは必ず確かめる
     if (info.contactUrl && !info.refusedText) {
+      await sleep(politeMs);
       const contactPage = await fetchText(info.contactUrl);
       if (contactPage && contactPage.body !== '') {
         const onContact = extractFromHtml(contactPage.body, info.contactUrl);
@@ -370,6 +389,23 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
       }
     }
 
+    return { host, origin, status: 'ok', httpStatus: top.status, info, pageText, recruit };
+  };
+
+  /** 集めた結果を書き込む。書き込みは 1 本にまとめる (SQLite は書き手が 1 つ)。 */
+  const persist = (c: Collected): void => {
+    result.visited++;
+    const now = new Date().toISOString();
+
+    if (c.status !== 'ok' || !c.info) {
+      if (c.status === 'disallowed') result.disallowed++;
+      else result.failed++;
+      update.run(c.status, now, c.httpStatus ?? null, c.error ?? null,
+        null, null, null, null, null, null, null, null, null, null, c.host);
+      return;
+    }
+
+    const info = c.info;
     const match = matchCorporation(db, info);
     result.ok++;
     if (match) result.matched++;
@@ -377,25 +413,26 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     if (info.contactUrl) result.contactFound++;
 
     update.run(
-      'ok', now, top.status, null,
+      'ok', now, c.httpStatus ?? null, null,
       info.name, info.address, info.tel, info.email, info.contactUrl, info.refusedText,
-      pageText.slice(0, 4000),
+      (c.pageText ?? '').slice(0, 4000),
       match?.corporateNumber ?? null, match?.confidence ?? null, match?.method ?? null,
-      host,
+      c.host,
     );
 
     if (match) {
+      const recruit = c.recruit;
       upsertProfile.run({
         n: match.corporateNumber,
-        url: origin,
+        url: c.origin,
         conf: match.confidence,
         at: now,
         form: info.contactUrl,
         email: info.email,
         tel: info.tel,
         refused: info.refusedText ? 1 : 0,
-        evidence: info.refusedText ? `${origin}: ${info.refusedText}` : null,
-        ...scaleOf(pageText),
+        evidence: info.refusedText ? `${c.origin}: ${info.refusedText}` : null,
+        ...scaleOf(c.pageText ?? ''),
         hiring: recruit ? (recruit.hiring ? 1 : 0) : null,
         hiringRoles: recruit && recruit.roles.length > 0 ? recruit.roles.join(',') : null,
         newGrad: recruit ? (recruit.newGrad ? 1 : 0) : null,
@@ -406,8 +443,29 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     }
 
     options.onProgress?.(result.visited, result.matched);
-    await sleep(delayMs);
-  }
+  };
+
+  // 別々の相手に同時に当たる。34.8 万件を 1 件ずつ回すと 190 時間かかる
+  const queue = hosts.map((h) => h.host);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= queue.length) return;
+      const host = queue[i]!;
+      try {
+        persist(await collect(host));
+      } catch (err) {
+        result.visited++;
+        result.failed++;
+        update.run('failed', new Date().toISOString(), null,
+          err instanceof Error ? err.message : String(err),
+          null, null, null, null, null, null, null, null, null, null, host);
+      }
+      if (delayMs > 0) await sleep(delayMs);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
 
   // 付加情報を書き換えたので、画面の選択肢の控えを作り直しておく。
   // 捨てるだけにすると、次に画面を開いた人が 40 秒待たされる。
