@@ -33,7 +33,25 @@ function scaleOf(text: string): {
 
 const USER_AGENT = 'eigyo1-site-collector/0.1 (internal sales list builder)';
 const TIMEOUT_MS = 15_000;
-const MAX_BYTES = 1_500_000;
+/**
+ * 1 ページから読む上限。
+ *
+ * 会社概要・問い合わせ先・代表者名は、どれもページの先頭側にある。
+ * 深いところまで読んでも取れるものは増えず、抱える量だけが増える。
+ *
+ * 実測: 上限 1.5 MB・同時 48 で回したところ、常駐 485 MB に対して
+ * 3,396 MB まで跳ねた (空きメモリ 1.6 GB を超え、強制終了の危険があった)。
+ * 文字列は 1 文字 2 バイトなので、バイト上限の 2 倍を抱えることになる。
+ */
+const MAX_BYTES = 700_000;
+
+/**
+ * 1 サイト分で溜める本文の上限 (文字数)。
+ *
+ * 溜めた本文は 業種の推定・規模の抽出・事業内容の抽出 に使う。
+ * どれも会社概要の範囲で足りるため、際限なく足す必要はない。
+ */
+const MAX_TEXT_CHARS = 200_000;
 
 /**
  * 会社の事実が置かれがちな場所。上から順に試す。
@@ -132,7 +150,10 @@ function absorb(acc: Accumulator, more: Extracted, url: string, html: string): v
     }
   }
   const text = toText(html);
-  acc.text = acc.text.length > 0 ? `${acc.text}\n${text}` : text;
+  if (acc.text.length < MAX_TEXT_CHARS) {
+    acc.text = acc.text.length > 0 ? `${acc.text}\n${text}` : text;
+    if (acc.text.length > MAX_TEXT_CHARS) acc.text = acc.text.slice(0, MAX_TEXT_CHARS);
+  }
   if (acc.representative === null) {
     const rep = findRepresentative(text);
     if (rep) {
