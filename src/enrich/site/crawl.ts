@@ -8,7 +8,8 @@ import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import {
-  contactUrlRejectReason, emptySocialLinks, extractFromHtml, findBusinessDescription,
+  contactUrlRejectReason, emailRejectReason, emptySocialLinks, extractFromHtml,
+  findBusinessDescription,
   findRepresentative, findSocialLinks, hasAnySocial, normalizeSocialLinks,
   toText, trimmedNameVariants,
   type Extracted, type SocialKey, type SocialLinks,
@@ -401,6 +402,43 @@ export interface RepairResult {
   scanned: number;
   fixed: number;
   cleared: number;
+}
+
+/**
+ * 保存済みのメールを、いまの判定にかけ直す。
+ *
+ * 点検で見つかったもの (実データ 103,855 件中):
+ *   採用専用 18 件   recruit@ / saiyo@ … 応募者の窓口に営業を送ることになる
+ *   形が違う 14 件   `E-mail：media-pr@…` のように見出しが混ざる
+ *                    `a@x.com,b@y.co.jp` のように 2 つ並んでいる
+ *
+ * 取り出せるなら直し、使えないものは空欄に戻す。
+ * 誤った宛先に送るより、送らない方がよい。
+ */
+export function repairEmails(db: Db): RepairResult {
+  const result: RepairResult = { scanned: 0, fixed: 0, cleared: 0 };
+  for (const [table, column, id] of [
+    ['web_hosts', 'site_email', 'host'],
+    ['company_profiles', 'contact_email', 'corporate_number'],
+  ] as const) {
+    const rows = db
+      .prepare(`SELECT ${id} AS k, ${column} AS v FROM ${table} WHERE ${column} IS NOT NULL`)
+      .all() as Array<{ k: string; v: string }>;
+    const set = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${id} = ?`);
+    db.transaction(() => {
+      for (const r of rows) {
+        result.scanned++;
+        // 見出しや 2 つ目のアドレスが混ざっていれば、先頭の 1 つを取り出す
+        const only = r.v.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/)?.[0] ?? null;
+        const usable = only !== null && emailRejectReason(only) === null ? only : null;
+        if (usable === r.v) continue;
+        set.run(usable, r.k);
+        if (usable === null) result.cleared++;
+        else result.fixed++;
+      }
+    })();
+  }
+  return result;
 }
 
 /**

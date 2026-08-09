@@ -13,7 +13,7 @@ import type { Db } from '../db/index.ts';
 import { classifyAll } from '../enrich/industry/classify.ts';
 import {
   crawlPendingHosts, normalizeStoredSocial, rematchHosts, repairBusinessEvidence,
-  repairRepresentatives, resetFailedHosts, scrubContactUrls,
+  repairEmails, repairRepresentatives, resetFailedHosts, scrubContactUrls,
 } from '../enrich/site/crawl.ts';
 
 export interface CompleteOptions {
@@ -155,9 +155,11 @@ export async function runToCompletion(
   const reps = repairRepresentatives(db);
   const biz = repairBusinessEvidence(db);
   const sns = normalizeStoredSocial(db);
+  const mail = repairEmails(db);
   say(
     '点検',
-    `宛先 -${scrubbed.removed} / 代表者名 -${reps.cleared} / 事業内容 -${biz.cleared} / SNS ${sns.fixed}`,
+    `宛先 -${scrubbed.removed} / 代表者名 -${reps.cleared} / 事業内容 -${biz.cleared}` +
+    ` / SNS ${sns.fixed} / メール 直し ${mail.fixed} 除去 ${mail.cleared}`,
   );
 
   result.qualified = countQualified(db);

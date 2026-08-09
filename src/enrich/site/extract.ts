@@ -62,7 +62,10 @@ const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
  *   noreply@…           … 送信専用。届かない
  */
 const EMAIL_REJECT: ReadonlyArray<readonly [reason: string, pattern: RegExp]> = [
-  ['見本', /^(sample|example|test|dummy|hoge|foo|bar|aaa|xxx|yourname|your-?mail|mail)@|@(example|sample|test|dummy|address|domain|yourdomain|mailaddress)\./i],
+  // `mail@…` を見本扱いしてはいけない。`mail@kaisha.co.jp` は日本の会社で
+  // 普通に使われている実在のアドレスで、実データで 31 件を誤って捨てていた。
+  // 見本かどうかは **ドメイン側** で判じる (@example. など)
+  ['見本', /^(sample|example|test|dummy|hoge|foo|bar|aaa|xxx|yourname|your-?mail)@|@(example|sample|test|dummy|address|domain|yourdomain|mailaddress)\./i],
   ['送信専用', /^(noreply|no-reply|donotreply|do-not-reply|auto|automail|system|bounce|postmaster|mailer-daemon)@/i],
   ['採用専用', /^(recruit|saiyo|saiyou|jinji|entry|career|job|kyujin)@/i],
   ['ファイル', /\.(png|jpe?g|gif|webp|svg|css|js|woff2?)$/i],
@@ -112,10 +115,33 @@ export function findObfuscatedEmail(text: string): string | null {
   return emailRejectReason(candidate) ? null : candidate;
 }
 
+/**
+ * 文字列の中からアドレスの形をした部分だけを取り出す。
+ *
+ * mailto: の中身をそのまま使うと、見出しや複数のアドレスが混ざる。
+ * 実データで拾ったもの:
+ *   `アドレス：pr@indent.co.jp`               見出しが付いている
+ *   `E-mail：media-pr@cc-main.co.jp`          同上
+ *   `info@leap-ai.co.jp\\`                    末尾に余計な記号
+ *   `a@x.com,b@y.co.jp`                       2 つ並んでいる (先頭だけ採る)
+ */
+function firstAddress(raw: string): string | null {
+  const m = raw.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  return m ? m[0] : null;
+}
+
 export function findEmail(html: string, text: string, host?: string): string | null {
   const candidates: string[] = [];
   for (const m of html.matchAll(/mailto:([^"'?>\s]+)/gi)) {
-    if (m[1]) candidates.push(decodeURIComponent(m[1]));
+    if (!m[1]) continue;
+    let decoded = m[1];
+    try {
+      decoded = decodeURIComponent(m[1]);
+    } catch {
+      // 壊れた符号化はそのまま扱う。取り出しでどのみち弾かれる
+    }
+    const only = firstAddress(decoded);
+    if (only) candidates.push(only);
   }
   // 数値文字参照で書かれたアドレス (&#105;&#110;… ) を戻してから探す
   const decoded = text.replace(/&#(\d{1,4});/g, (_, d: string) => String.fromCharCode(Number(d)));

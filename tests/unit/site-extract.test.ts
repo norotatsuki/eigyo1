@@ -211,6 +211,26 @@ describe('宛先に使えないメールを外す', () => {
     expect(emailRejectReason('soumu@kaisha.co.jp')).toBeNull();
     // 社名にたまたま test が入るだけの先を見本と取り違えない
     expect(emailRejectReason('info@testing-lab.co.jp')).toBeNull();
+    // 実データで 31 件を誤って捨てていた。日本の会社で普通に使われる形
+    expect(emailRejectReason('mail@koyoshobo.co.jp')).toBeNull();
+    expect(emailRejectReason('mail@bskk.co.jp')).toBeNull();
+  });
+
+  it('見本かどうかはドメイン側で判じる', () => {
+    expect(emailRejectReason('mail@example.com')).toBe('見本');
+    expect(emailRejectReason('example@c-hic.co.jp')).toBe('見本');
+  });
+
+  // 実データ: mailto: の中身に見出しや 2 つ目のアドレスが混ざっていた
+  it('見出しが付いた mailto: からアドレスだけを取る', () => {
+    expect(findEmail('<a href="mailto:E-mail：media-pr@cc-main.co.jp">連絡</a>', ''))
+      .toBe('media-pr@cc-main.co.jp');
+    expect(findEmail('<a href="mailto:info@leap-ai.co.jp\\">連絡</a>', ''))
+      .toBe('info@leap-ai.co.jp');
+  });
+
+  it('2 つ並んでいたら先頭を採る', () => {
+    expect(findEmail('<a href="mailto:a@x.co.jp,b@y.co.jp">連絡</a>', '')).toBe('a@x.co.jp');
   });
 
   it('見本しか無いページからは何も取らない', () => {
