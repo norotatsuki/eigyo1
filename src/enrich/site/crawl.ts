@@ -7,7 +7,7 @@
 import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
-import { extractFromHtml, type Extracted } from './extract.ts';
+import { extractFromHtml, toText, type Extracted } from './extract.ts';
 
 const USER_AGENT = 'eigyo1-site-collector/0.1 (internal sales list builder)';
 const TIMEOUT_MS = 15_000;
@@ -251,6 +251,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
   const update = db.prepare(
     `UPDATE web_hosts SET crawl_status = ?, crawled_at = ?, http_status = ?, error = ?,
        site_name = ?, site_address = ?, site_tel = ?, site_email = ?, contact_url = ?, refused_text = ?,
+       site_text = ?,
        corporate_number = ?, match_confidence = ?, match_method = ?
      WHERE host = ?`,
   );
@@ -282,7 +283,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
     if (!(await robotsAllows(origin, ['/', ...PROFILE_PATHS]))) {
       result.disallowed++;
-      update.run('disallowed', now, null, 'robots.txt により不可', null, null, null, null, null, null, null, null, null, host);
+      update.run('disallowed', now, null, 'robots.txt により不可', null, null, null, null, null, null, null, null, null, null, host);
       await sleep(delayMs);
       continue;
     }
@@ -291,12 +292,14 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     if (!top || top.body === '') {
       result.failed++;
       update.run('failed', now, top?.status ?? null, top ? 'HTML を取得できません' : '接続できません',
-        null, null, null, null, null, null, null, null, null, host);
+        null, null, null, null, null, null, null, null, null, null, host);
       await sleep(delayMs);
       continue;
     }
 
     let info = extractFromHtml(top.body, `${origin}/`);
+    // 本文を残しておく。あとから LLM に読ませるとき、訪ね直さずに済む
+    let pageText = toText(top.body);
 
     // 会社概要ページがあれば、そちらの方が正確
     if (!info.name || !info.address) {
@@ -304,6 +307,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
         const page = await fetchText(`${origin}${path}`);
         if (!page || page.body === '') continue;
         const more = extractFromHtml(page.body, `${origin}${path}`);
+        pageText = `${pageText}\n${toText(page.body)}`;
         info = {
           name: info.name ?? more.name,
           address: info.address ?? more.address,
@@ -336,6 +340,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     update.run(
       'ok', now, top.status, null,
       info.name, info.address, info.tel, info.email, info.contactUrl, info.refusedText,
+      pageText.slice(0, 4000),
       match?.corporateNumber ?? null, match?.confidence ?? null, match?.method ?? null,
       host,
     );

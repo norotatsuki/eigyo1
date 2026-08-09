@@ -16,6 +16,8 @@ import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
 import { crawlPendingHosts, rematchHosts } from './enrich/site/crawl.ts';
+import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
+import { enrichWithLlm } from './enrich/llm/enrich.ts';
 import { applyGate, recordOutreach, CHANNEL_POLICY, type Channel } from './outreach/gate.ts';
 import { CONFIG_PATH, PRESET_DAILY_CAP, checkChannelReady, configTemplate, loadConfig } from './outreach/config.ts';
 import { runCampaign } from './outreach/campaign.ts';
@@ -55,6 +57,15 @@ const USAGE = `
     --collection <版>      索引の版 (既定 CC-MAIN-2025-05)
 
   rematch  収集済みのデータだけで突き合わせをやり直す (サイトは訪ねない)
+
+  llm      収集済みの本文を LLM に読ませ、取りこぼしを埋める (サイトは訪ねない)
+    --limit <数>           対象の件数 (既定 50)
+    --classify             業種の分類もかける
+    --model <名前>         既定 gpt-4o-mini
+    --estimate             費用の見積もりだけ出して終わる
+    ※ 鍵は環境変数 OPENAI_API_KEY から読みます
+    ※ 抽出した値は原文に含まれることを確かめてから採用します
+       (LLM が作った宛先を使わないため)
 
   crawl    集めたホストを訪ねて接触先を取り出し、法人番号に突き合わせる
     --limit <数>           訪ねる件数 (既定 50)
@@ -135,6 +146,9 @@ const options = {
   template: { type: 'string' },
   live: { type: 'boolean' },
   preset: { type: 'string' },
+  classify: { type: 'boolean' },
+  model: { type: 'string' },
+  estimate: { type: 'boolean' },
   add: { type: 'string' },
   remove: { type: 'string' },
   reason: { type: 'string' },
@@ -332,6 +346,69 @@ async function cmdDiscover(db: Db, v: Values): Promise<void> {
     `[発見] 完了 ${r.pagesFetched} ページ / 新規 ${fmt(r.hostsInserted)} 件 / ` +
       `累計 ${fmt(r.totalHosts)} 件` + (r.failures > 0 ? ` / 失敗 ${r.failures} ページ` : ''),
   );
+}
+
+async function cmdLlm(db: Db, v: Values): Promise<void> {
+  const limit = num(v.limit) ?? 50;
+  const classify = v.classify === true;
+
+  const target = db.prepare(
+    `SELECT COUNT(*) AS n FROM web_hosts WHERE crawl_status = 'ok' AND site_text IS NOT NULL
+       AND (site_name IS NULL OR site_address IS NULL OR corporate_number IS NULL)`,
+  ).get() as { n: number };
+  const noText = db.prepare(
+    "SELECT COUNT(*) AS n FROM web_hosts WHERE crawl_status = 'ok' AND site_text IS NULL",
+  ).get() as { n: number };
+
+  console.error(`[LLM] 埋められる先: ${fmt(target.n)} 件`);
+  if (noText.n > 0) {
+    console.error(`[LLM] 本文を保存していない先が ${fmt(noText.n)} 件あります (本文の保存は後から入れたため)`);
+    console.error('[LLM] これらは crawl で訪ね直すと対象になります');
+  }
+
+  // 1 件あたり 入力 4000 文字 + 出力 100 文字 を目安に見積もる
+  const perCall = { input: roughTokens('あ'.repeat(4000)), output: 100 };
+  const calls = Math.min(limit, target.n) * (classify ? 2 : 1);
+  const pricing = { inputPerMillion: 0.15, outputPerMillion: 0.6, currency: 'USD' };
+  const estimate = estimateCost(
+    { promptTokens: perCall.input * calls, completionTokens: perCall.output * calls, calls },
+    pricing,
+  );
+  console.error(`[LLM] 見積もり: ${fmt(calls)} 回 / 約 $${estimate.toFixed(2)} (gpt-4o-mini の単価で計算)`);
+  const forAll = (estimate / Math.max(1, Math.min(limit, target.n))) * target.n;
+  if (target.n > limit) console.error(`[LLM] 全 ${fmt(target.n)} 件なら 約 $${forAll.toFixed(2)}`);
+
+  if (v.estimate === true) {
+    console.error('[LLM] 見積もりのみ。実行するには --estimate を外してください');
+    return;
+  }
+
+  let llm;
+  try {
+    llm = createLlm({ ...DEFAULT_LLM, ...(asString(v.model) ? { model: asString(v.model)! } : {}) });
+  } catch (err) {
+    console.error(`[LLM] ${err instanceof Error ? err.message : String(err)}`);
+    console.error('[LLM] export OPENAI_API_KEY="..." を実行してください');
+    process.exitCode = 1;
+    return;
+  }
+
+  const r = await enrichWithLlm(db, llm, {
+    limit, classify, pricing,
+    onProgress: (done, matched, cost) => {
+      if (done % 10 === 0) console.error(`[LLM] ${fmt(done)} 件 / 新たに紐付き ${fmt(matched)} / 約 $${cost.toFixed(3)}`);
+    },
+  });
+
+  console.log(`走査 ${fmt(r.scanned)} 件 — 約 $${r.estimatedCost.toFixed(3)} (${fmt(r.usage.calls)} 回)`);
+  console.log(`  会社名を補えた    ${fmt(r.filled.name).padStart(6)}`);
+  console.log(`  住所を補えた      ${fmt(r.filled.address).padStart(6)}`);
+  console.log(`  電話を補えた      ${fmt(r.filled.tel).padStart(6)}`);
+  console.log(`  メールを補えた    ${fmt(r.filled.email).padStart(6)}`);
+  console.log(`  新たに紐付いた    ${fmt(r.newlyMatched).padStart(6)}`);
+  if (classify) console.log(`  業種を入れた      ${fmt(r.classified).padStart(6)}`);
+  console.log(`  原文に無く捨てた  ${fmt(r.rejected).padStart(6)}  ← LLM が作った値`);
+  if (r.errors > 0) console.log(`  応答が得られず    ${fmt(r.errors).padStart(6)}`);
 }
 
 function cmdRematch(db: Db): void {
@@ -690,6 +767,9 @@ async function main(): Promise<void> {
         break;
       case 'rematch':
         cmdRematch(db);
+        break;
+      case 'llm':
+        await cmdLlm(db, v);
         break;
       case 'crawl':
         await cmdCrawl(db, v);

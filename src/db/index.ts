@@ -36,6 +36,7 @@ export function openDb(path: string = defaultDbPath()): Db {
  */
 const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, decl: string]> = [
   ['web_hosts', 'site_email', 'TEXT'],
+  ['web_hosts', 'site_text', 'TEXT'],
 ];
 
 function addMissingColumns(db: Db): void {

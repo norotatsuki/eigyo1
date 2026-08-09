@@ -173,6 +173,9 @@ CREATE TABLE IF NOT EXISTS web_hosts (
   site_email      TEXT,
   contact_url     TEXT,                  -- 問い合わせページ
   refused_text    TEXT,                  -- 営業お断りの文言 (見つかった場合)
+  -- 本文の先頭 (LLM に読ませるため)。訪ね直さずに読み直せるようにする。
+  -- 1 件 4KB 前後。34.8 万件で 1.4GB ほどになる見込み
+  site_text       TEXT,
 
   -- 突き合わせ結果
   corporate_number   TEXT,               -- 紐付いた法人番号
