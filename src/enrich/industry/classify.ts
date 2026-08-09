@@ -45,20 +45,26 @@ export function inferIndustry(nameCore: string, corpForm: string | null): Infere
     }
   }
 
+  // 長い一致を優先する。確信度で選ぶと、短い語が偶然はまったときに勝ってしまう。
+  //
+  // 実データで踏んだ誤り: 「有限会社後藤衛生コンサルタント」は
+  // 「衛生コンサルタント」の中に「生コン」(確信度 0.9) を含む。
+  // 同時に「コンサル」(0.7) にも当たっているのに、確信度で選んだために
+  // 窯業・土石製品製造業と判定していた。
+  //
+  // KEYWORD_RULES は長さの降順に並べてあるので、最初に当たったものを採ればよい。
+  // 同じ長さの語が複数当たる場合は、並び順が確信度の降順なので自然に強い方が残る。
   let best: Inference | null = null;
 
   for (const rule of KEYWORD_RULES) {
     if (!nameCore.includes(rule.keyword)) continue;
-    if (best === null || rule.confidence > best.confidence) {
-      best = {
-        code: rule.code,
-        name: divisionName(rule.code),
-        confidence: rule.confidence,
-        matched: rule.keyword,
-      };
-    }
-    // 最長一致で十分に強ければ、それ以上短い語を見る必要はない
-    if (best.confidence >= 0.9) break;
+    best = {
+      code: rule.code,
+      name: divisionName(rule.code),
+      confidence: rule.confidence,
+      matched: rule.keyword,
+    };
+    break;
   }
 
   if (corpForm) {
