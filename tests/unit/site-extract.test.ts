@@ -7,6 +7,7 @@ import {
   findEmail,
   findObfuscatedEmail,
   findRepresentative,
+  findSocialLinks,
   findRefusal,
   findTel,
   nameFromCopyright,
@@ -326,5 +327,58 @@ describe('事業内容を本文から取る', () => {
 
   it('短すぎるものは取らない', () => {
     expect(findBusinessDescription('事業内容 各種')).toBeNull();
+  });
+});
+
+describe('SNS のリンクを集める', () => {
+  it('会社のアカウントを種類ごとに取る', () => {
+    const html = `
+      <a href="https://www.facebook.com/kaisha">Facebook</a>
+      <a href="https://www.instagram.com/kaisha/">Instagram</a>
+      <a href="https://x.com/kaisha">X</a>
+      <a href="https://www.linkedin.com/company/kaisha/">LinkedIn</a>`;
+    const s = findSocialLinks(html);
+    expect(s.facebook).toContain('facebook.com/kaisha');
+    expect(s.instagram).toContain('instagram.com/kaisha');
+    expect(s.x).toContain('x.com/kaisha');
+    expect(s.linkedin).toContain('linkedin.com/company/kaisha');
+  });
+
+  it('共有ボタンは会社のアカウントではない', () => {
+    const html = '<a href="https://www.facebook.com/sharer/sharer.php?u=https://kaisha.co.jp">共有</a>';
+    expect(findSocialLinks(html).facebook).toBeNull();
+  });
+
+  // 実測 (無作為 150 社): 代表者個人の LinkedIn は 0 件だった。
+  // 見つかるのは会社のアカウント。確認できないものを代表者の欄に入れない
+  it('個人プロフィールでも、代表者名が近くになければ代表者のものとしない', () => {
+    const html = '<a href="https://www.linkedin.com/in/someone">LinkedIn</a>';
+    expect(findSocialLinks(html, '山田 太郎').representativeLinkedin).toBeNull();
+  });
+
+  it('代表者名が近くにあれば代表者のものとする', () => {
+    const html = '<p>代表取締役 山田 太郎 <a href="https://www.linkedin.com/in/taro-yamada">プロフィール</a></p>';
+    expect(findSocialLinks(html, '山田 太郎').representativeLinkedin).toContain('/in/taro-yamada');
+  });
+
+  it('書き方が違っても代表者名を照合する', () => {
+    // 抽出した名前は「山田 太郎」でも、本文は「山田太郎」と書かれていることがある
+    const html = '<p>代表取締役 山田太郎 <a href="https://www.facebook.com/taro.yamada">Facebook</a></p>';
+    const s = findSocialLinks(html, '山田 太郎');
+    expect(s.representativeFacebook).toContain('facebook.com/taro.yamada');
+    expect(s.facebook).toBeNull(); // 代表者のものを会社の欄に重複させない
+  });
+
+  // 実データ: 埋め込み用の飾りが付いたまま保存されていた
+  it('追跡用の飾りを落とす', () => {
+    const html = '<a href="https://twitter.com/kaisha?ref_src=twsrc%5Etfw">Twitter</a>';
+    expect(findSocialLinks(html).x).toBe('https://twitter.com/kaisha');
+  });
+
+  it('SNS が無ければ何も取らない', () => {
+    expect(findSocialLinks('<a href="/company/">会社概要</a>')).toEqual({
+      facebook: null, instagram: null, x: null, linkedin: null,
+      representativeLinkedin: null, representativeFacebook: null, representativeInstagram: null,
+    });
   });
 });

@@ -8,8 +8,9 @@ import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import {
-  contactUrlRejectReason, extractFromHtml, findBusinessDescription, findRepresentative,
-  toText, trimmedNameVariants, type Extracted,
+  contactUrlRejectReason, emptySocialLinks, extractFromHtml, findBusinessDescription,
+  findRepresentative, findSocialLinks, toText, trimmedNameVariants,
+  type Extracted, type SocialLinks,
 } from './extract.ts';
 import { extractScale } from './scale.ts';
 import { extractRecruit, findRecruitUrl, type Recruit } from './recruit.ts';
@@ -76,6 +77,7 @@ interface Collected {
   pageText?: string;
   recruit?: Recruit | null;
   representative?: string | null;
+  social?: SocialLinks;
   /** 項目ごとに、どのページから取ったか。後から検証できるように残す */
   sources?: FieldSources;
 }
@@ -90,6 +92,7 @@ export type FieldSources = Partial<Record<
 interface Accumulator {
   info: Extracted;
   representative: string | null;
+  social: SocialLinks;
   sources: FieldSources;
   text: string;
   pagesFetched: number;
@@ -99,6 +102,7 @@ function newAccumulator(): Accumulator {
   return {
     info: { name: null, address: null, tel: null, email: null, contactUrl: null, refusedText: null },
     representative: null,
+    social: emptySocialLinks(),
     sources: {},
     text: '',
     pagesFetched: 0,
@@ -126,6 +130,13 @@ function absorb(acc: Accumulator, more: Extracted, url: string, html: string): v
       acc.representative = rep;
       acc.sources.representative = url;
     }
+  }
+
+  // SNS は footer に置かれることが多く、どのページからでも拾える。
+  // 代表者名が先に取れていれば、本人のものかどうかも判じられる
+  const social = findSocialLinks(html, acc.representative);
+  for (const key of Object.keys(acc.social) as Array<keyof SocialLinks>) {
+    if (acc.social[key] === null && social[key] !== null) acc.social[key] = social[key];
   }
 }
 
@@ -576,7 +587,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
   const update = db.prepare(
     `UPDATE web_hosts SET crawl_status = ?, crawled_at = ?, http_status = ?, error = ?,
        site_name = ?, site_address = ?, site_tel = ?, site_email = ?, contact_url = ?, refused_text = ?,
-       site_text = ?, site_representative = ?, field_sources = ?,
+       site_text = ?, site_representative = ?, field_sources = ?, social_links = ?,
        corporate_number = ?, match_confidence = ?, match_method = ?
      WHERE host = ?`,
   );
@@ -585,9 +596,11 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
        (corporate_number, website_url, website_confidence, website_checked_at,
         contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence,
         capital, employees, revenue, scale_source, representative, field_sources, business_evidence,
+        social_links,
         hiring, hiring_roles, hiring_new_grad, hiring_mid_career, hiring_checked_at, updated_at)
      VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence,
              @capital, @employees, @revenue, @scaleSource, @rep, @sources, @evidenceText,
+             @social,
              @hiring, @hiringRoles, @newGrad, @midCareer, @hiringAt, @at)
      ON CONFLICT(corporate_number) DO UPDATE SET
        website_url = excluded.website_url,
@@ -610,6 +623,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
        representative = COALESCE(excluded.representative, company_profiles.representative),
        field_sources = COALESCE(excluded.field_sources, company_profiles.field_sources),
        business_evidence = COALESCE(excluded.business_evidence, company_profiles.business_evidence),
+       social_links = COALESCE(excluded.social_links, company_profiles.social_links),
        updated_at = excluded.updated_at`,
   );
 
@@ -698,7 +712,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     return {
       host, origin, status: 'ok', httpStatus: top.status,
       info: acc.info, pageText: acc.text, recruit,
-      representative: acc.representative, sources: acc.sources,
+      representative: acc.representative, social: acc.social, sources: acc.sources,
     };
   };
 
@@ -711,7 +725,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
       if (c.status === 'disallowed') result.disallowed++;
       else result.failed++;
       update.run(c.status, now, c.httpStatus ?? null, c.error ?? null,
-        null, null, null, null, null, null, null, null, null, null, null, null, c.host);
+        null, null, null, null, null, null, null, null, null, null, null, null, null, c.host);
       return;
     }
 
@@ -723,10 +737,14 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     if (info.contactUrl) result.contactFound++;
 
     const sources = c.sources && Object.keys(c.sources).length > 0 ? JSON.stringify(c.sources) : null;
+    // 1 つも見つからなかったときは空の JSON を残さない (空欄と区別がつかなくなる)
+    const social = c.social && Object.values(c.social).some((v) => v !== null)
+      ? JSON.stringify(c.social)
+      : null;
     update.run(
       'ok', now, c.httpStatus ?? null, null,
       info.name, info.address, info.tel, info.email, info.contactUrl, info.refusedText,
-      (c.pageText ?? '').slice(0, 4000), c.representative ?? null, sources,
+      (c.pageText ?? '').slice(0, 4000), c.representative ?? null, sources, social,
       match?.corporateNumber ?? null, match?.confidence ?? null, match?.method ?? null,
       c.host,
     );
@@ -746,6 +764,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
         rep: c.representative ?? null,
         sources,
         evidenceText: businessEvidence(c.pageText ?? ''),
+        social,
         ...scaleOf(c.pageText ?? ''),
         hiring: recruit ? (recruit.hiring ? 1 : 0) : null,
         hiringRoles: recruit && recruit.roles.length > 0 ? recruit.roles.join(',') : null,
@@ -774,7 +793,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
         result.failed++;
         update.run('failed', new Date().toISOString(), null,
           err instanceof Error ? err.message : String(err),
-          null, null, null, null, null, null, null, null, null, null, null, null, host);
+          null, null, null, null, null, null, null, null, null, null, null, null, null, host);
       }
       if (delayMs > 0) await sleep(delayMs);
     }

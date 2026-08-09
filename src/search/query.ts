@@ -88,6 +88,8 @@ export interface CompanyRow {
   hiring_roles: string | null;
   representative: string | null;
   business_evidence: string | null;
+  /** SNS のリンク (JSON 文字列)。会社のものと代表者のものを分けて持つ */
+  social_links: string | null;
   /** 項目ごとの取得元 URL (JSON 文字列)。後から検証するため */
   field_sources: string | null;
 }
@@ -97,7 +99,7 @@ const SELECT_COLUMNS = `
   c.address_full, c.post_code, c.kind, c.assignment_date,
   p.industry_code, p.industry_name, p.capital, p.employees, p.revenue,
   p.website_url, p.contact_form_url, p.contact_email, p.contact_tel, p.hiring, p.hiring_roles,
-  p.representative, p.business_evidence, p.field_sources
+  p.representative, p.business_evidence, p.field_sources, p.social_links
 `;
 
 interface BuiltWhere {

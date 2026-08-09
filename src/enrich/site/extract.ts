@@ -286,6 +286,95 @@ export function findBusinessDescription(text: string): string | null {
   return null;
 }
 
+/**
+ * サイトに載っている SNS のリンクを集める。
+ *
+ * **会社のアカウントと、代表者個人のアカウントは別物である。**
+ * 実測 (無作為 150 社): 何らかの SNS があるのは 45%、しかし
+ * 代表者個人の LinkedIn (`/in/`) は **0 件**、代表者名が近くにある個人
+ * プロフィールも 0 件だった。日本の企業サイトに代表者個人の SNS はまず載らない。
+ *
+ * したがってここで取れるものの大半は **会社の** アカウントである。
+ * 代表者のものと言えるのは、個人プロフィールの形をしていて、かつ
+ * その近くに代表者名が書かれている場合だけ。確認できないものを
+ * 「代表者の」欄に入れてはいけない。
+ */
+export interface SocialLinks {
+  /** 会社のアカウント */
+  facebook: string | null;
+  instagram: string | null;
+  x: string | null;
+  linkedin: string | null;
+  /** 代表者本人と確認できたものだけ */
+  representativeLinkedin: string | null;
+  representativeFacebook: string | null;
+  representativeInstagram: string | null;
+}
+
+export function emptySocialLinks(): SocialLinks {
+  return {
+    facebook: null, instagram: null, x: null, linkedin: null,
+    representativeLinkedin: null, representativeFacebook: null, representativeInstagram: null,
+  };
+}
+
+/** 共有ボタンや広告の URL。その会社のアカウントではない */
+const SHARE_LINK = /(sharer|share\.php|intent\/tweet|\/share\?|plugins\/|badge|developers\.facebook)/i;
+
+/** 個人プロフィールの形をしているか。LinkedIn だけは構造で見分けられる */
+const LINKEDIN_PERSON = /linkedin\.com\/in\//i;
+const LINKEDIN_COMPANY = /linkedin\.com\/(company|school)\//i;
+
+/** リンクの近くに代表者名があるか。あればその人のものとみなしてよい */
+function nearRepresentative(html: string, href: string, representative: string | null): boolean {
+  if (!representative) return false;
+  const i = html.indexOf(href);
+  if (i === -1) return false;
+  const around = html.slice(Math.max(0, i - 300), i + 300);
+  // 「山田 太郎」と「山田太郎」のどちらの書き方でも拾えるように
+  return around.includes(representative) || around.includes(representative.replace(/[\s　]/g, ''));
+}
+
+export function findSocialLinks(html: string, representative: string | null = null): SocialLinks {
+  const found = emptySocialLinks();
+
+  for (const m of html.matchAll(/href=["']([^"']+)["']/gi)) {
+    const href = (m[1] ?? '').trim();
+    if (href.length === 0 || SHARE_LINK.test(href)) continue;
+    let url: URL;
+    try {
+      url = new URL(href, 'https://example.invalid');
+    } catch {
+      continue;
+    }
+    if (url.hostname === 'example.invalid') continue; // 相対リンクは SNS ではない
+    const host = url.hostname.replace(/^www\./, '').toLowerCase();
+    // 追跡用の飾り (?ref_src=twsrc%5Etfw など) は宛先の一部ではない。落として揃える
+    url.search = '';
+    url.hash = '';
+    const full = url.toString().replace(/\/$/, '');
+    const own = nearRepresentative(html, href, representative);
+
+    if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
+      if (LINKEDIN_PERSON.test(full)) {
+        // 個人プロフィール。代表者名が近くにあるときだけ代表者のものとする
+        if (own && !found.representativeLinkedin) found.representativeLinkedin = full;
+      } else if (LINKEDIN_COMPANY.test(full) && !found.linkedin) {
+        found.linkedin = full;
+      }
+    } else if (host === 'facebook.com' || host === 'fb.com') {
+      if (own && !found.representativeFacebook) found.representativeFacebook = full;
+      else if (!found.facebook) found.facebook = full;
+    } else if (host === 'instagram.com') {
+      if (own && !found.representativeInstagram) found.representativeInstagram = full;
+      else if (!found.instagram) found.instagram = full;
+    } else if ((host === 'twitter.com' || host === 'x.com') && !found.x) {
+      found.x = full;
+    }
+  }
+  return found;
+}
+
 /** タグを落として本文だけにする。 */
 export function toText(html: string): string {
   return html
