@@ -36,6 +36,7 @@ import {
   SUPPRESSION_REASONS, type SuppressionReason,
 } from './outreach/store.ts';
 import { divisionName, majorDivisionOf } from './enrich/industry/classification.ts';
+import { networkInterfaces } from 'node:os';
 import { serve } from './web/server.ts';
 import {
   countCompanies,
@@ -59,8 +60,12 @@ const USAGE = `
     --min-confidence <値>  この確信度未満は保存しない (既定 0.5)
     --with-site            サイトを集めた先だけを対象にする (収集の途中で回すならこちら)
 
-  serve    画面を出す (127.0.0.1 のみ。社外からは届かない)
+  serve    画面を出す
     --port <番号>          待受ポート (既定 5173)
+    --host <宛先>          待ち受ける宛先 (既定 127.0.0.1 = この端末だけ)
+                           0.0.0.0 にすると社内の他端末からも見える
+    --password <合言葉>    8 文字以上。127.0.0.1 以外で待ち受けるときは必須
+                           (環境変数 EIGYO_PASSWORD でも渡せる)
 
   discover ホスト名を集める (Common Crawl の公開索引。トークン不要)
     --pages <数>           取得するページ数 (既定 10 / 全体で 1153 ページ)
@@ -189,6 +194,8 @@ const options = {
   suffix: { type: 'string' },
   stream: { type: 'boolean' },
   'with-site': { type: 'boolean' },
+  host: { type: 'string' },
+  password: { type: 'string' },
   delay: { type: 'string' },
   channel: { type: 'string' },
   template: { type: 'string' },
@@ -343,13 +350,35 @@ async function cmdIngest(db: Db, v: Values): Promise<void> {
 }
 
 /** 画面を出して待ち続ける。Ctrl-C まで戻らない。 */
+/** この端末が持っている宛先。他の端末から入るときに使う。 */
+function localAddresses(): string[] {
+  const out: string[] = [];
+  for (const list of Object.values(networkInterfaces())) {
+    for (const n of list ?? []) {
+      if (n.family === 'IPv4' && !n.internal) out.push(n.address);
+    }
+  }
+  return out;
+}
+
 function cmdServe(db: Db, v: Values): Promise<void> {
   const port = num(v.port) ?? 5173;
+  const host = typeof v.host === 'string' ? v.host : '127.0.0.1';
+  const password = typeof v.password === 'string' ? v.password : (process.env.EIGYO_PASSWORD ?? null);
+  const openToNetwork = host !== '127.0.0.1' && host !== 'localhost';
+
   return new Promise<void>((resolve) => {
     const server = serve(db, {
-      port,
+      port, host, password,
       onListen: (url) => {
-        console.error(`[画面] ${url} を開いてください (127.0.0.1 のみ待受)`);
+        if (openToNetwork) {
+          console.error(`[画面] ${url} で待ち受けます (合言葉が要ります)`);
+          for (const addr of localAddresses()) {
+            console.error(`[画面]   同じネットワークからは http://${addr}:${port}/`);
+          }
+        } else {
+          console.error(`[画面] ${url} を開いてください (この端末だけ)`);
+        }
         console.error('[画面] 止めるときは Ctrl-C');
       },
     });
@@ -592,7 +621,39 @@ async function cmdDomains(db: Db, v: Values): Promise<void> {
   );
 }
 
+/**
+ * Node の HTTP 実装 (undici) が壊れた応答で落とす内部エラーを受け止める。
+ *
+ * 相手のサーバが規格に合わない応答を返すと、undici の内部で表明違反
+ * (ERR_ASSERTION) が起きる。これは fetch の外側、ソケットの後始末の中で
+ * 投げられるため **try/catch では捕まえられない**。
+ *
+ * 実際にこれで一晩の収集が止まった。見張りが 40 回再開したがそのたびに
+ * 同じところで落ち、上限に達して諦めていた。
+ *
+ * 落ちたソケットは既に捨てられており、その 1 件を取り逃すだけで
+ * 残りの処理には影響しない。数十万件を訪ねる用途では、1 件のために
+ * 全体を止める方が損害が大きい。
+ *
+ * ただし **握りつぶすのはこの種類だけ**。他の異常は今までどおり落として、
+ * 見張りに再開させる (握りつぶすと本当の不具合に気づけなくなる)。
+ */
+function surviveBrokenResponses(): void {
+  let swallowed = 0;
+  process.on('uncaughtException', (err: NodeJS.ErrnoException) => {
+    const isUndiciAssertion =
+      err.code === 'ERR_ASSERTION' && (err.stack ?? '').includes('undici');
+    if (!isUndiciAssertion) throw err;
+    swallowed++;
+    // 数が増え続けるなら別の問題なので、そのことが分かるように出す
+    if (swallowed <= 3 || swallowed % 100 === 0) {
+      console.error(`[収集] 壊れた応答で 1 件取り逃しました (通算 ${swallowed} 件)`);
+    }
+  });
+}
+
 async function cmdComplete(db: Db, v: Values): Promise<void> {
+  surviveBrokenResponses();
   const started = Date.now();
   console.error('[完了まで] 収集 → 訪ね直し → 再挑戦 → 業種 → 再照合 → 点検 の順に回します');
   console.error('[完了まで] 途中で止めても、次に実行すれば続きから始まります');
@@ -639,6 +700,7 @@ function cmdScrub(db: Db): void {
 }
 
 async function cmdCrawl(db: Db, v: Values): Promise<void> {
+  surviveBrokenResponses();
   const limit = num(v.limit) ?? 50;
   const delayMs = num(v.delay) ?? 300;
   const concurrency = num(v.concurrency) ?? 6;

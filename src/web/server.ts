@@ -12,6 +12,10 @@ import { fileURLToPath } from 'node:url';
 import type { Db } from '../db/index.ts';
 import { loadMeta, type Meta } from '../search/meta.ts';
 import { CAPITAL_BANDS, EMPLOYEE_BANDS, REVENUE_BANDS } from '../search/bands.ts';
+import {
+  COOKIE_NAME, createAuth, isLoopback, issueToken, loginPage, passwordMatches,
+  tokenFromCookie, tokenValid, type Auth,
+} from './auth.ts';
 import { scaleWithEstimates } from '../enrich/estimate.ts';
 import {
   breakdown,
@@ -25,7 +29,8 @@ import {
 } from '../search/query.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const HOST = '127.0.0.1';
+/** 既定は手元だけ。外に開くのは明示したときに限る */
+const DEFAULT_HOST = '127.0.0.1';
 
 /** 検索条件を要求の問い合わせ文字列から組み立てる。 */
 export function filterFromParams(q: URLSearchParams): SearchFilter {
@@ -139,9 +144,55 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-function handle(db: Db, meta: Meta, req: IncomingMessage, res: ServerResponse): void {
-  const url = new URL(req.url ?? '/', `http://${HOST}`);
+/** 入室の要求を受ける。合言葉が合えば証を渡す。 */
+function handleLogin(auth: Auth, req: IncomingMessage, res: ServerResponse): void {
+  let body = '';
+  req.on('data', (chunk: Buffer) => {
+    body += chunk.toString('utf8');
+    // 合言葉しか受け取らないので、大きな中身は読まずに切る
+    if (body.length > 4096) req.destroy();
+  });
+  req.on('end', () => {
+    const given = new URLSearchParams(body).get('password') ?? '';
+    if (!passwordMatches(auth, given)) {
+      res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(loginPage('合言葉が違います'));
+      return;
+    }
+    res.writeHead(302, {
+      location: '/',
+      'set-cookie':
+        `${COOKIE_NAME}=${issueToken(auth)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`,
+    });
+    res.end();
+  });
+}
+
+function handle(db: Db, meta: Meta, auth: Auth, req: IncomingMessage, res: ServerResponse): void {
+  const url = new URL(req.url ?? '/', `http://${DEFAULT_HOST}`);
   const q = url.searchParams;
+
+  if (auth.required) {
+    if (url.pathname === '/login') {
+      if (req.method === 'POST') {
+        handleLogin(auth, req, res);
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(loginPage());
+      return;
+    }
+    if (!tokenValid(auth, tokenFromCookie(req.headers.cookie))) {
+      // 画面は入室に回し、データの口は素っ気なく断る
+      if (url.pathname.startsWith('/api/')) {
+        sendJson(res, 401, { error: '入室していません' });
+        return;
+      }
+      res.writeHead(302, { location: '/login' });
+      res.end();
+      return;
+    }
+  }
 
   if (url.pathname === '/' || url.pathname === '/index.html') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -255,17 +306,40 @@ function handle(db: Db, meta: Meta, req: IncomingMessage, res: ServerResponse): 
 
 export interface ServeOptions {
   port?: number;
+  /** 待ち受ける宛先。既定は 127.0.0.1 (手元だけ) */
+  host?: string;
+  /** 合言葉。手元以外に開くときは必須 */
+  password?: string | null;
   onListen?: (url: string) => void;
 }
 
 /** 画面を出す。呼び出し側が止められるよう、サーバを返す。 */
 export function serve(db: Db, options: ServeOptions = {}) {
+  const host = options.host ?? DEFAULT_HOST;
+  const password = options.password ?? null;
+
+  /*
+   * 外に開くなら合言葉を必ず要る形にする。
+   *
+   * 手元だけなら要らないが、他の端末から届く形にした瞬間、
+   * 500 万社の情報とメールアドレス・代表者名が誰でも見られる状態になる。
+   * 「あとで付ける」を許すと、付け忘れたまま開き続けることになる。
+   */
+  if (!isLoopback(host) && (password === null || password.length < 8)) {
+    throw new Error(
+      `${host} で待ち受けるには合言葉が要ります (8 文字以上)。\n` +
+      '  --password <合言葉> か 環境変数 EIGYO_PASSWORD で渡してください。\n' +
+      '  合言葉なしで開くと、500 万社の情報と連絡先が誰でも見られる状態になります。',
+    );
+  }
+  const auth = createAuth(password, !isLoopback(host));
+
   const meta = loadMeta(db, {
     onCompute: () => console.error('[画面] 選択肢の集計を作ります (初回のみ 1 分ほど)…'),
   });
   const server = createServer((req, res) => {
     try {
-      handle(db, meta, req, res);
+      handle(db, meta, auth, req, res);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!res.headersSent) sendJson(res, 500, { error: message });
@@ -284,7 +358,7 @@ export function serve(db: Db, options: ServeOptions = {}) {
   server.on('listening', () => {
     const addr = server.address();
     const port = typeof addr === 'object' && addr ? addr.port : wanted;
-    options.onListen?.(`http://${HOST}:${port}/`);
+    options.onListen?.(`http://${host}:${port}/`);
   });
 
   let attemptsLeft = 10;
@@ -294,7 +368,7 @@ export function serve(db: Db, options: ServeOptions = {}) {
       attemptsLeft--;
       current++;
       console.error(`[画面] ${current - 1} は使用中のため ${current} を試します`);
-      server.listen(current, HOST);
+      server.listen(current, host);
       return;
     }
     console.error(
@@ -305,6 +379,6 @@ export function serve(db: Db, options: ServeOptions = {}) {
     process.exitCode = 1;
   });
 
-  server.listen(wanted, HOST);
+  server.listen(wanted, host);
   return server;
 }

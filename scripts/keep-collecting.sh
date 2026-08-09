@@ -21,7 +21,9 @@ DB=${DB:-data/eigyo.db}
 CONCURRENCY=${CONCURRENCY:-96}
 LOG=${LOG:-.complete.log}
 STOP=.stop-collecting
-MAX_ROUNDS=${MAX_ROUNDS:-40}
+# 再開の上限。1 区切り 2 万件なので、40 回では足りずに諦めていた。
+# 進んでいる限り止める理由はないので、十分に大きく取る
+MAX_ROUNDS=${MAX_ROUNDS:-400}
 
 pending() {
   sqlite3 "file:${DB}?mode=ro" \
@@ -63,3 +65,4 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
 done
 
 say "上限 (${MAX_ROUNDS} 回) に達しました。残り $(pending) 件"
+say "まだ残っているなら bash scripts/keep-collecting.sh を叩き直してください"
