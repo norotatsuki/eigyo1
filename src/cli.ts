@@ -16,7 +16,8 @@ import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
 import {
-  crawlPendingHosts, rematchHosts, repairRepresentatives, resetFailedHosts, scrubContactUrls,
+  crawlPendingHosts, rematchHosts, repairBusinessEvidence, repairRepresentatives,
+  resetFailedHosts, scrubContactUrls,
 } from './enrich/site/crawl.ts';
 import { DEFAULT_EDITION, discoverFromDomainList } from './ingest/commoncrawl/domains.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
@@ -52,8 +53,10 @@ const USAGE = `
     --region <地域>    全国 (既定) / 都道府県名 / 国外
     --db <パス>        データベースの位置 (既定: data/eigyo.db)
 
-  classify 商号と法人格から業種を推定して付加情報に書き込む
+  classify 業種を推定して付加情報に書き込む
+           (会社が書いた事業内容 → サイト本文 → 商号 の順に見る)
     --min-confidence <値>  この確信度未満は保存しない (既定 0.5)
+    --with-site            サイトを集めた先だけを対象にする (収集の途中で回すならこちら)
 
   serve    画面を出す (127.0.0.1 のみ。社外からは届かない)
     --port <番号>          待受ポート (既定 5173)
@@ -174,6 +177,7 @@ const options = {
   edition: { type: 'string' },
   suffix: { type: 'string' },
   stream: { type: 'boolean' },
+  'with-site': { type: 'boolean' },
   delay: { type: 'string' },
   channel: { type: 'string' },
   template: { type: 'string' },
@@ -340,11 +344,15 @@ function cmdServe(db: Db, v: Values): Promise<void> {
 
 function cmdClassify(db: Db, v: Values): void {
   const minConfidence = num(v['min-confidence']) ?? 0.5;
+  const withSiteOnly = Boolean(v['with-site']);
   const started = Date.now();
-  console.error(`[推定] 商号と法人格から業種を推定します (確信度 ${minConfidence} 以上を保存)`);
+  console.error(
+    `[推定] ${withSiteOnly ? 'サイトを集めた先の' : '全法人の'}業種を推定します` +
+    ` (事業内容 → 本文 → 商号 の順 / 確信度 ${minConfidence} 以上を保存)`,
+  );
 
   const r = classifyAll(db, {
-    minConfidence,
+    minConfidence, withSiteOnly,
     onProgress: (scanned, inferred) => {
       const sec = ((Date.now() - started) / 1000).toFixed(0);
       console.error(`[推定] 走査 ${fmt(scanned)} 件 / 推定 ${fmt(inferred)} 件 (${sec} 秒)`);
@@ -580,6 +588,9 @@ function cmdScrub(db: Db): void {
 
   const rep = repairRepresentatives(db);
   console.log(`代表者名 ${fmt(rep.scanned)} 件 / 直した ${fmt(rep.fixed)} 件 / 空欄に戻した ${fmt(rep.cleared)} 件`);
+
+  const biz = repairBusinessEvidence(db);
+  console.log(`事業内容 ${fmt(biz.scanned)} 件 / 直した ${fmt(biz.fixed)} 件 / 空欄に戻した ${fmt(biz.cleared)} 件`);
 }
 
 async function cmdCrawl(db: Db, v: Values): Promise<void> {

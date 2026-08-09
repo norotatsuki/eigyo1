@@ -349,6 +349,36 @@ export interface RepairResult {
 }
 
 /**
+ * 保存済みの事業内容を、集めてある本文から取り直す。
+ *
+ * 取り方を直しても、直す前に保存した分は残る。本文は手元にあるので
+ * サイトを訪ね直す必要はない。
+ */
+export function repairBusinessEvidence(db: Db): RepairResult {
+  const rows = db
+    .prepare(
+      `SELECT p.corporate_number AS n, p.business_evidence AS ev,
+              (SELECT h.site_text FROM web_hosts h
+                WHERE h.corporate_number = p.corporate_number AND h.site_text IS NOT NULL LIMIT 1) AS text
+         FROM company_profiles p WHERE p.business_evidence IS NOT NULL`,
+    )
+    .all() as Array<{ n: string; ev: string; text: string | null }>;
+
+  const set = db.prepare('UPDATE company_profiles SET business_evidence = ? WHERE corporate_number = ?');
+  const result: RepairResult = { scanned: rows.length, fixed: 0, cleared: 0 };
+  db.transaction(() => {
+    for (const r of rows) {
+      const again = r.text ? findBusinessDescription(r.text) : null;
+      if (again === r.ev) continue;
+      set.run(again, r.n);
+      if (again === null) result.cleared++;
+      else result.fixed++;
+    }
+  })();
+  return result;
+}
+
+/**
  * 保存済みの代表者名を、いまの判定にかけ直す。
  *
  * 人名の判定を厳しくしても、直す前に集めた分は残る。サイトを訪ね直さなくても

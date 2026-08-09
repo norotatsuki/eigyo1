@@ -99,6 +99,13 @@ export interface ClassifyOptions {
   activeOnly?: boolean;
   /** 一度に読み取る件数。既定 20000 */
   pageSize?: number;
+  /**
+   * サイトを集めた先だけを対象にする。
+   *
+   * 500 万社を舐め直すと十数分かかるうえ、サイトを持たない先は
+   * 何度やっても結果が変わらない。収集が進むたびに回すならこちら。
+   */
+  withSiteOnly?: boolean;
   onProgress?: (scanned: number, inferred: number) => void;
 }
 
@@ -157,9 +164,14 @@ export function classifyAll(db: Db, options: ClassifyOptions = {}): ClassifyResu
     `SELECT c.id AS id, c.corporate_number AS n, c.name_core AS core, c.corp_form AS form,
             (SELECT h.site_text FROM web_hosts h
               WHERE h.corporate_number = c.corporate_number AND h.site_text IS NOT NULL
-              LIMIT 1) AS site_text
+              LIMIT 1) AS site_text,
+            (SELECT p.business_evidence FROM company_profiles p
+              WHERE p.corporate_number = c.corporate_number) AS evidence
        FROM corporations c
       WHERE c.id > ? ${activeOnly ? 'AND c.is_active = 1' : ''}
+        ${options.withSiteOnly
+          ? 'AND EXISTS (SELECT 1 FROM web_hosts h WHERE h.corporate_number = c.corporate_number AND h.site_text IS NOT NULL)'
+          : ''}
       ORDER BY c.id
       LIMIT ?`,
   );
@@ -172,14 +184,33 @@ export function classifyAll(db: Db, options: ClassifyOptions = {}): ClassifyResu
       core: string;
       form: string | null;
       site_text: string | null;
+      evidence: string | null;
     }>;
     if (rows.length === 0) break;
 
     const batch: Array<{ n: string; hit: Inference }> = [];
     for (const row of rows) {
       scanned++;
-      // 商号で当たらなければ本文を見る (LLM を使わずに済む分はここで済ませる)
-      let hit = inferIndustry(row.core, row.form);
+      /*
+       * 会社が自分で書いた事業内容を最優先にする。
+       *
+       * 商号からの推定は当てにならない (「株式会社丸十製陶」は陶器か焼肉か)。
+       * 「事業内容」の欄に書かれた文は、その会社が何をしているかの直接の証拠なので、
+       * 商号より先に見る。次が本文全体、最後が商号。
+       */
+      let hit: Inference | null = null;
+      if (row.evidence) {
+        const fromEvidence = classifyFromText(row.evidence, 1);
+        if (fromEvidence) {
+          hit = {
+            code: fromEvidence.code, name: fromEvidence.name,
+            // 会社自身の記述なので、本文全体からの推定より確からしい
+            confidence: Math.min(0.95, fromEvidence.confidence + 0.1),
+            matched: `事業内容:${fromEvidence.matched}`,
+          };
+        }
+      }
+      if (!hit) hit = inferIndustry(row.core, row.form);
       if (!hit && row.site_text) {
         const fromText = classifyFromText(row.site_text);
         if (fromText) {

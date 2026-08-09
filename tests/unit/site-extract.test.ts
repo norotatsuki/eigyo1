@@ -3,6 +3,7 @@ import {
   contactUrlRejectReason,
   emailRejectReason,
   extractFromHtml,
+  findBusinessDescription,
   findEmail,
   findObfuscatedEmail,
   findRepresentative,
@@ -282,6 +283,13 @@ describe('代表者名を拾う', () => {
     expect(findRepresentative('代表者 など')).toBeNull();
   });
 
+  // 実データ: 「令嬢」を代表者名として取っていた
+  it('区切りの無い 2 字は人名として取らない', () => {
+    expect(findRepresentative('代表者 令嬢')).toBeNull();
+    // 区切りがあれば 2 字でも姓名として読める
+    expect(findRepresentative('代表者 林 大')).toBe('林 大');
+  });
+
   it('見出し語の先頭 1 字が残った形を切る', () => {
     expect(findRepresentative('代表者 猪又晃晴 設立')).toBe('猪又晃晴');
   });
@@ -294,5 +302,29 @@ describe('代表者名を拾う', () => {
 
   it('長すぎるものは人名とみなさない', () => {
     expect(findRepresentative('代表者 特定非営利活動')).toBeNull();
+  });
+});
+
+describe('事業内容を本文から取る', () => {
+  it('会社が書いた事業内容をそのまま返す', () => {
+    const text = '会社概要 事業内容 野菜・果実及びその加工品の販売 資本金 3000万円';
+    expect(findBusinessDescription(text)).toBe('野菜・果実及びその加工品の販売');
+  });
+
+  // 実データ: メニューの項目名を事業内容として拾っていた
+  it('案内メニューを事業内容として拾わない', () => {
+    const nav = '採用情報 お問い合わせ HOMEに戻る 会社概要 About us 事業内容 Service 採用情報 Recruit';
+    expect(findBusinessDescription(nav)).toBeNull();
+  });
+
+  it('メニューを飛ばして本文の方を採る', () => {
+    const text =
+      '事業内容 Service お問い合わせ Contact ' +
+      'ここから本文 事業内容 上下水道施設の設計および施工管理 資本金 1000万円';
+    expect(findBusinessDescription(text)).toBe('上下水道施設の設計および施工管理');
+  });
+
+  it('短すぎるものは取らない', () => {
+    expect(findBusinessDescription('事業内容 各種')).toBeNull();
   });
 });

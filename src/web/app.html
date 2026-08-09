@@ -105,39 +105,41 @@
   .empty { padding: 40px; text-align: center; color: var(--muted); }
   .note { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.5; }
 
-  /* 1 社を 1 枚のカードにする。項目が 11 あるので、表の列では入り切らない */
-  .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
-    padding: 14px 16px; margin-bottom: 10px;
+  /*
+   * 1 社を 1 行にする。項目が 11 あるので横には収まらない。
+   * 横に流して読めるようにし、商号だけは左に貼り付けて見失わないようにする。
+   */
+  .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+  table { border-collapse: separate; border-spacing: 0; font-size: 13px; white-space: nowrap; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th {
+    font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .04em;
+    position: sticky; top: 0; background: #f7f7f3; z-index: 2; border-bottom: 1px solid var(--line);
   }
-  .card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
-  .card-name { font-size: 15px; font-weight: 600; }
-  .card-no { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .card-addr { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
-  .card-biz {
-    font-size: 12px; color: var(--ink); background: #f7f7f3; border-radius: 5px;
-    padding: 7px 10px; margin-bottom: 10px; line-height: 1.6;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  tbody tr:hover td { background: #fcfcfa; }
+  /* 商号は横に流しても見えている必要がある */
+  th.stick, td.stick {
+    position: sticky; left: 0; z-index: 3; background: var(--panel);
+    border-right: 1px solid var(--line); font-weight: 600;
   }
-  /* 項目は 2 列。狭い画面では 1 列に落とす */
-  .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 22px; }
-  @media (max-width: 900px) { .fields { grid-template-columns: 1fr; } }
-  .f { display: flex; gap: 9px; font-size: 13px; align-items: baseline; min-width: 0; }
-  .f > .k { flex: 0 0 6.5em; color: var(--muted); font-size: 12px; }
-  .f > .v { min-width: 0; overflow-wrap: anywhere; }
-  .f .none { color: #b3b1a8; }
-  .f a { color: var(--accent); }
+  th.stick { z-index: 4; background: #f7f7f3; }
+  tbody tr:hover td.stick { background: #fcfcfa; }
+  td.num { font-variant-numeric: tabular-nums; color: var(--muted); }
+  td a { color: var(--accent); }
+  .none { color: #c2c0b6; }
+  /* 長い文は列を広げすぎない。全文はマウスを乗せると出る */
+  td.clip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+  td.addr { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
   /* 推定値は事実と見分けがつくようにする。混ぜて見せない */
   .est { color: var(--warn); }
   .est-mark {
     font-size: 10px; border: 1px solid currentColor; border-radius: 3px;
-    padding: 0 3px; margin-left: 5px; vertical-align: 1px;
+    padding: 0 3px; margin-left: 4px; vertical-align: 1px;
   }
-  .card-foot { margin-top: 9px; display: flex; gap: 12px; align-items: center; }
-  .card-foot button {
+  td.src button {
     background: none; border: 0; color: var(--accent); font-size: 12px; padding: 0; cursor: pointer;
   }
-  .sources { margin-top: 9px; border-top: 1px dashed var(--line); padding-top: 9px; }
+  tr.sources > td { background: #fafaf7; white-space: normal; padding: 10px 14px; }
   /* 収集は今も動いている。少ない結果を見て「壊れている」と思わせないための帯 */
   .progress {
     background: var(--accent-soft); border-bottom: 1px solid var(--line);
@@ -250,7 +252,20 @@
       </div>
     </div>
 
-    <div id="rows"><div class="empty">読み込み中…</div></div>
+    <div class="wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="stick">企業名</th>
+            <th>メール</th><th>代表者</th><th>電話番号</th>
+            <th>従業員数</th><th>年商</th><th>資本金</th>
+            <th>業種</th><th>事業内容</th><th>住所</th>
+            <th>公式HP</th><th>問い合わせフォーム</th><th>法人番号</th><th>出典</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="14" class="empty">読み込み中…</td></tr></tbody>
+      </table>
+    </div>
 
     <div class="pager">
       <button class="ghost" id="prev">前へ</button>
@@ -307,19 +322,6 @@ function none(text) {
   return s;
 }
 
-/** 1 項目分の行。値が無ければ「—」を出し、空欄であることを隠さない。 */
-function field(key, node) {
-  const wrap = document.createElement('div');
-  wrap.className = 'f';
-  const k = document.createElement('span');
-  k.className = 'k'; k.textContent = key;
-  const v = document.createElement('span');
-  v.className = 'v';
-  v.append(node ?? none());
-  wrap.append(k, v);
-  return wrap;
-}
-
 /**
  * 推定値の見せ方。
  *
@@ -366,7 +368,6 @@ const SOURCE_LABELS = {
 
 function sourcesBox(r) {
   const box = document.createElement('div');
-  box.className = 'sources';
   let sources = null;
   try { sources = r.field_sources ? JSON.parse(r.field_sources) : null; } catch (e) { sources = null; }
   if (!sources) {
@@ -382,88 +383,83 @@ function sourcesBox(r) {
   return box;
 }
 
-/** 1 社分のカード。指定された 11 項目をすべて出す。 */
-function card(r) {
-  const el = document.createElement('div');
-  el.className = 'card';
+/** 1 つの升目。値が無ければ「—」を出し、空欄であることを隠さない。 */
+function cell(node, className) {
+  const td = document.createElement('td');
+  if (className) td.className = className;
+  td.append(node ?? none());
+  return td;
+}
 
-  const head = document.createElement('div');
-  head.className = 'card-head';
-  const name = document.createElement('span');
-  name.className = 'card-name';
-  name.textContent = r.name;
-  head.append(name);
-  if (r.industry_name) {
-    const tag = document.createElement('span');
-    tag.className = 'tag';
-    tag.textContent = r.industry_name;
-    head.append(tag);
-  }
+/** 長い文は升目に収め、全文はマウスを乗せたときに出す。 */
+function clipped(text, className) {
+  const td = cell(text ? document.createTextNode(text) : null, className);
+  if (text) td.title = text;
+  return td;
+}
+
+/** 1 社を 1 行にする。指定された 11 項目をすべて列に出す。 */
+function rowFor(r) {
+  const tr = document.createElement('tr');
+  const scale = r.scale || { employees: null, revenue: null };
+
+  const name = document.createElement('td');
+  name.className = 'stick';
+  name.append(document.createTextNode(r.name));
   if (r.hiring) {
     const tag = document.createElement('span');
     tag.className = 'tag low';
+    tag.style.marginLeft = '7px';
     tag.textContent = '採用中';
-    head.append(tag);
+    name.append(tag);
   }
-  const no = document.createElement('span');
-  no.className = 'card-no';
-  no.textContent = '法人番号 ' + r.corporate_number;
-  head.append(no);
-  el.append(head);
+  tr.append(name);
 
-  const addr = document.createElement('div');
-  addr.className = 'card-addr';
-  addr.textContent = (r.post_code ? '〒' + r.post_code + ' ' : '') + r.address_full;
-  el.append(addr);
-
-  if (r.business_evidence) {
-    const biz = document.createElement('div');
-    biz.className = 'card-biz';
-    biz.textContent = r.business_evidence;
-    biz.title = r.business_evidence;
-    el.append(biz);
-  }
-
-  const fields = document.createElement('div');
-  fields.className = 'fields';
-  const scale = r.scale || { employees: null, revenue: null };
-
-  fields.append(
-    field('メール', r.contact_email ? link(r.contact_email, 'mailto:' + r.contact_email) : null),
-    field('代表者', r.representative ? document.createTextNode(r.representative) : null),
-    field('フォーム', r.contact_form_url ? link(shortUrl(r.contact_form_url), r.contact_form_url) : null),
-    field('電話番号', r.contact_tel ? document.createTextNode(r.contact_tel) : null),
-    field('公式HP', r.website_url ? link(shortUrl(r.website_url), r.website_url) : null),
-    field('従業員数', scaleNode(scale.employees, (v) => fmt(v) + ' 人')),
-    field('業種', r.industry_name ? document.createTextNode(r.industry_name) : null),
-    field('年商', scaleNode(scale.revenue, yen)),
+  tr.append(
+    cell(r.contact_email ? link(r.contact_email, 'mailto:' + r.contact_email) : null),
+    cell(r.representative ? document.createTextNode(r.representative) : null),
+    cell(r.contact_tel ? document.createTextNode(r.contact_tel) : null, 'num'),
+    cell(scaleNode(scale.employees, (v) => fmt(v) + ' 人'), 'num'),
+    cell(scaleNode(scale.revenue, yen), 'num'),
+    cell(r.capital ? document.createTextNode(yen(r.capital)) : null, 'num'),
+    cell(r.industry_name ? document.createTextNode(r.industry_name) : null),
+    clipped(r.business_evidence, 'clip'),
+    clipped((r.post_code ? '〒' + r.post_code + ' ' : '') + r.address_full, 'addr'),
+    cell(r.website_url ? link(shortUrl(r.website_url), r.website_url) : null),
+    cell(r.contact_form_url ? link(shortUrl(r.contact_form_url), r.contact_form_url) : null),
+    cell(document.createTextNode(r.corporate_number), 'num'),
   );
-  if (r.capital) fields.append(field('資本金', document.createTextNode(yen(r.capital))));
-  if (r.hiring_roles) fields.append(field('募集職種', document.createTextNode(r.hiring_roles.split(',').join(' / '))));
-  el.append(fields);
 
-  const foot = document.createElement('div');
-  foot.className = 'card-foot';
+  // 出典は普段は畳んでおく。列に混ぜると横に長くなりすぎる
+  const srcTd = document.createElement('td');
+  srcTd.className = 'src';
   const toggle = document.createElement('button');
-  toggle.textContent = '出典を見る';
-  const box = sourcesBox(r);
-  box.hidden = true;
+  toggle.textContent = '見る';
+  srcTd.append(toggle);
+  tr.append(srcTd);
+
+  const srcRow = document.createElement('tr');
+  srcRow.className = 'sources';
+  const srcCell = document.createElement('td');
+  srcCell.colSpan = 14;
+  srcCell.append(sourcesBox(r));
+  srcRow.append(srcCell);
+  srcRow.hidden = true;
   toggle.addEventListener('click', () => {
-    box.hidden = !box.hidden;
-    toggle.textContent = box.hidden ? '出典を見る' : '出典を閉じる';
+    srcRow.hidden = !srcRow.hidden;
+    toggle.textContent = srcRow.hidden ? '見る' : '閉じる';
   });
-  foot.append(toggle);
-  el.append(foot, box);
-  return el;
+
+  return [tr, srcRow];
 }
 
 function renderRows(rows) {
-  const box = $('rows');
+  const tbody = $('rows');
   if (rows.length === 0) {
-    box.innerHTML = '<div class="empty">条件に合う法人がありません</div>';
+    tbody.innerHTML = '<tr><td colspan="14" class="empty">条件に合う法人がありません</td></tr>';
     return;
   }
-  box.replaceChildren(...rows.map(card));
+  tbody.replaceChildren(...rows.flatMap(rowFor));
 }
 
 // 件数の集計は数秒かかることがある。一覧を待たせないよう別々に投げ、

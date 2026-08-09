@@ -185,6 +185,10 @@ const PROFILE_LABELS = [
  */
 function looksLikePersonName(name: string, separated: boolean): boolean {
   if (name.length < 2 || name.length > 6) return false;
+  // 区切りが無い姓名は 3 字以上になる (「高橋渉」「山田太郎」)。
+  // 2 字は姓だけか、そもそも人名でないことが多い
+  // (実データ: 「令嬢」を代表者名として取っていた)
+  if (!separated && name.length < 3) return false;
   const hasKanji = /[一-龥々]/.test(name);
   const hasKana = /[ァ-ヶー]/.test(name);
   // 漢字とカタカナが混ざるのは、社名や商品名にありがちな形
@@ -240,15 +244,44 @@ export function findRepresentative(text: string): string | null {
  */
 const BUSINESS_LABELS = ['事業内容', '業務内容', '事業概要', '主な事業', '営業品目', '取扱品目', '事業領域'];
 
+/** 次の見出しが始まる語。ここで切る。 */
+const NEXT_HEADING = /(資本金|設立|従業員|代表者|所在地|電話|沿革|許可|加盟|取引銀行|主要取引)/;
+
+/**
+ * 案内メニューに現れる語。
+ *
+ * 「事業内容」はメニューの項目名でもあるため、本文より先にメニューに当たることがある。
+ * 実データ: 「採用情報 お問い合わせ HOMEに戻る 会社概要 About us 事業内容 Service」を
+ * 事業内容として拾っていた。これは会社が何をしているかを何も語っていない。
+ */
+const NAV_WORDS = [
+  'HOME', 'ホーム', 'TOP', 'About', 'Service', 'Recruit', 'Contact', 'News',
+  'お問い合わせ', 'お問合せ', '採用情報', 'サイトマップ', 'プライバシー', 'に戻る', 'MENU',
+];
+
+/** メニューらしいか。案内語が 2 つ以上あれば、それは本文ではない。 */
+function looksLikeNavigation(text: string): boolean {
+  let hits = 0;
+  for (const w of NAV_WORDS) {
+    if (text.includes(w)) hits++;
+    if (hits >= 2) return true;
+  }
+  return false;
+}
+
 export function findBusinessDescription(text: string): string | null {
   for (const label of BUSINESS_LABELS) {
-    const i = text.indexOf(label);
-    if (i === -1) continue;
-    const after = text.slice(i + label.length).replace(/^[\s　:：]+/, '');
-    // 次の見出しらしきものまで、または 200 字まで
-    const value = after.split(/(?:資本金|設立|従業員|代表者|所在地|電話|沿革|許可|加盟)/)[0] ?? '';
-    const trimmed = value.trim().slice(0, 200);
-    if (trimmed.length >= 4) return trimmed;
+    // 同じ見出しが何度も出る (メニューと本文)。メニューでない最初のものを採る
+    let from = 0;
+    for (;;) {
+      const i = text.indexOf(label, from);
+      if (i === -1) break;
+      from = i + label.length;
+
+      const after = text.slice(from).replace(/^[\s　:：]+/, '');
+      const value = (after.split(NEXT_HEADING)[0] ?? '').trim().slice(0, 200);
+      if (value.length >= 8 && !looksLikeNavigation(value)) return value;
+    }
   }
   return null;
 }
