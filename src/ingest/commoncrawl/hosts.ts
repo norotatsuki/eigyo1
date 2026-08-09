@@ -95,7 +95,7 @@ export async function discoverHosts(db: Db, options: DiscoverOptions = {}): Prom
   const retries = options.retries ?? 3;
   const retryWaitMs = options.retryWaitMs ?? 5000;
 
-  const done = new Set(
+  const fetchedPages = new Set(
     (
       db
         .prepare(
@@ -128,7 +128,7 @@ export async function discoverHosts(db: Db, options: DiscoverOptions = {}): Prom
   let page = options.fromPage ?? 0;
 
   while (pagesFetched < pages) {
-    if (done.has(page)) {
+    if (fetchedPages.has(page)) {
       page++;
       continue;
     }
@@ -138,8 +138,8 @@ export async function discoverHosts(db: Db, options: DiscoverOptions = {}): Prom
     // 一時的な不調なので、間を置いて数回やり直せば大半は通る。
     // (失敗したページは記録に残さないため、次回の実行でも拾い直せる)
     let lastError = '';
-    let done = false;
-    for (let attempt = 0; attempt < retries && !done; attempt++) {
+    let succeeded = false;
+    for (let attempt = 0; attempt < retries && !succeeded; attempt++) {
       if (attempt > 0) await sleep(retryWaitMs * attempt);
       try {
         const res = await fetch(url, { headers: { 'user-agent': USER_AGENT } });
@@ -153,13 +153,13 @@ export async function discoverHosts(db: Db, options: DiscoverOptions = {}): Prom
         hostsInserted += inserted;
         pagesFetched++;
         options.onProgress?.(page, hosts.size, hostsInserted);
-        done = true;
+        succeeded = true;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
       }
     }
 
-    if (!done) {
+    if (!succeeded) {
       failures++;
       process.stderr.write(`[発見] ページ ${page} を飛ばします (${retries} 回試行): ${lastError}\n`);
       // 連続して失敗するなら索引側の問題。無限に叩かない
