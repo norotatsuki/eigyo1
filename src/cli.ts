@@ -125,6 +125,9 @@ const USAGE = `
                            業種の確信度の下限。営業に使うなら 0.7 を薦める
     --capital-min <円>     資本金の下限
     --employees-min <人>   従業員数の下限
+    --employees-max <人>   従業員数の上限
+    --revenue-min <円>     売上高の下限 (会社概要に載っていた分だけ)
+    --revenue-max <円>     売上高の上限
     --assigned-from <日付> 法人番号指定年月日の下限 (YYYY-MM-DD)
     --has-website          サイトが判明している先だけ
     --has-form             問い合わせフォームが判明している先だけ
@@ -171,6 +174,9 @@ const options = {
   'industry-confidence': { type: 'string' },
   'capital-min': { type: 'string' },
   'employees-min': { type: 'string' },
+  'employees-max': { type: 'string' },
+  'revenue-min': { type: 'string' },
+  'revenue-max': { type: 'string' },
   'assigned-from': { type: 'string' },
   'has-website': { type: 'boolean' },
   'has-form': { type: 'boolean' },
@@ -219,6 +225,12 @@ function toFilter(v: Values, base: SearchFilter | null = null): SearchFilter {
   if (capitalMin !== undefined) filter.capitalMin = capitalMin;
   const employeesMin = num(v['employees-min']);
   if (employeesMin !== undefined) filter.employeesMin = employeesMin;
+  const employeesMax = num(v['employees-max']);
+  if (employeesMax !== undefined) filter.employeesMax = employeesMax;
+  const revenueMin = num(v['revenue-min']);
+  if (revenueMin !== undefined) filter.revenueMin = revenueMin;
+  const revenueMax = num(v['revenue-max']);
+  if (revenueMax !== undefined) filter.revenueMax = revenueMax;
   const assignedFrom = asString(v['assigned-from']);
   if (assignedFrom) filter.assignedFrom = assignedFrom;
   if (v['has-website'] === true) filter.hasWebsite = true;

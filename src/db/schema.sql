@@ -127,6 +127,8 @@ CREATE TABLE IF NOT EXISTS company_profiles (
   -- 規模
   capital               INTEGER,        -- 資本金(円)
   employees             INTEGER,        -- 従業員数
+  revenue               INTEGER,        -- 売上高(円)。会社概要に載っていれば
+  scale_source          TEXT,           -- site_profile / gbizinfo / manual
   founded_date          TEXT,
 
   -- 接触経路

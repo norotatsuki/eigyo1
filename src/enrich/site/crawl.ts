@@ -8,6 +8,16 @@ import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import { extractFromHtml, toText, type Extracted } from './extract.ts';
+import { extractScale } from './scale.ts';
+
+/** 会社概要から拾えた規模。1 つも取れなければ出典も残さない。 */
+function scaleOf(text: string): {
+  capital: number | null; employees: number | null; revenue: number | null; scaleSource: string | null;
+} {
+  const s = extractScale(text);
+  const any = s.capital !== null || s.employees !== null || s.revenue !== null;
+  return { ...s, scaleSource: any ? 'site_profile' : null };
+}
 
 const USER_AGENT = 'eigyo1-site-collector/0.1 (internal sales list builder)';
 const TIMEOUT_MS = 15_000;
@@ -179,13 +189,14 @@ export interface RematchResult {
 export function rematchHosts(db: Db): RematchResult {
   const rows = db
     .prepare(
-      `SELECT host, site_name, site_address, site_tel, site_email, contact_url, refused_text,
+      `SELECT host, site_name, site_address, site_tel, site_email, site_text, contact_url, refused_text,
               corporate_number AS current, match_method AS currentMethod
          FROM web_hosts WHERE crawl_status = 'ok' AND site_name IS NOT NULL`,
     )
     .all() as Array<{
     host: string; site_name: string; site_address: string | null; site_tel: string | null;
-    site_email: string | null; contact_url: string | null; refused_text: string | null;
+    site_email: string | null; site_text: string | null;
+    contact_url: string | null; refused_text: string | null;
     current: string | null; currentMethod: string | null;
   }>;
 
@@ -195,8 +206,10 @@ export function rematchHosts(db: Db): RematchResult {
   const upsertProfile = db.prepare(
     `INSERT INTO company_profiles
        (corporate_number, website_url, website_confidence, website_checked_at,
-        contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence, updated_at)
-     VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence, @at)
+        contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence,
+        capital, employees, revenue, scale_source, updated_at)
+     VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence,
+             @capital, @employees, @revenue, @scaleSource, @at)
      ON CONFLICT(corporate_number) DO UPDATE SET
        website_url = excluded.website_url,
        website_confidence = excluded.website_confidence,
@@ -227,6 +240,7 @@ export function rematchHosts(db: Db): RematchResult {
       upsertProfile.run({
         n: m.corporateNumber, url: `https://${r.host}`, conf: m.confidence, at: now,
         form: r.contact_url, email: r.site_email, tel: r.site_tel,
+        ...scaleOf(r.site_text ?? ''),
         refused: r.refused_text ? 1 : 0,
         evidence: r.refused_text ? `https://${r.host}: ${r.refused_text}` : null,
       });
@@ -258,8 +272,10 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
   const upsertProfile = db.prepare(
     `INSERT INTO company_profiles
        (corporate_number, website_url, website_confidence, website_checked_at,
-        contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence, updated_at)
-     VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence, @at)
+        contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence,
+        capital, employees, revenue, scale_source, updated_at)
+     VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence,
+             @capital, @employees, @revenue, @scaleSource, @at)
      ON CONFLICT(corporate_number) DO UPDATE SET
        website_url = excluded.website_url,
        website_confidence = excluded.website_confidence,
@@ -269,6 +285,10 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
        contact_tel = COALESCE(excluded.contact_tel, company_profiles.contact_tel),
        solicitation_refused = MAX(excluded.solicitation_refused, company_profiles.solicitation_refused),
        refused_evidence = COALESCE(excluded.refused_evidence, company_profiles.refused_evidence),
+       capital = COALESCE(excluded.capital, company_profiles.capital),
+       employees = COALESCE(excluded.employees, company_profiles.employees),
+       revenue = COALESCE(excluded.revenue, company_profiles.revenue),
+       scale_source = COALESCE(excluded.scale_source, company_profiles.scale_source),
        updated_at = excluded.updated_at`,
   );
 
@@ -356,6 +376,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
         tel: info.tel,
         refused: info.refusedText ? 1 : 0,
         evidence: info.refusedText ? `${origin}: ${info.refusedText}` : null,
+        ...scaleOf(pageText),
       });
     }
 

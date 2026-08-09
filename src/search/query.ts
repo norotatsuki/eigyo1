@@ -29,6 +29,9 @@ export interface SearchFilter {
   capitalMax?: number;
   employeesMin?: number;
   employeesMax?: number;
+  /** 売上高(円)。会社概要に載っていた分だけが対象 */
+  revenueMin?: number;
+  revenueMax?: number;
   /** 法人番号指定年月日の範囲。設立時期のおおよその代理として使う */
   assignedFrom?: string;
   assignedTo?: string;
@@ -60,6 +63,7 @@ export interface CompanyRow {
   industry_name: string | null;
   capital: number | null;
   employees: number | null;
+  revenue: number | null;
   website_url: string | null;
   contact_form_url: string | null;
   contact_email: string | null;
@@ -68,7 +72,7 @@ export interface CompanyRow {
 const SELECT_COLUMNS = `
   c.corporate_number, c.name, c.corp_form, c.pref_name, c.city_name,
   c.address_full, c.post_code, c.kind, c.assignment_date,
-  p.industry_code, p.industry_name, p.capital, p.employees,
+  p.industry_code, p.industry_name, p.capital, p.employees, p.revenue,
   p.website_url, p.contact_form_url, p.contact_email
 `;
 
@@ -171,6 +175,8 @@ function usesProfile(filter: SearchFilter): boolean {
       filter.capitalMax !== undefined ||
       filter.employeesMin !== undefined ||
       filter.employeesMax !== undefined ||
+      filter.revenueMin !== undefined ||
+      filter.revenueMax !== undefined ||
       filter.hasWebsite ||
       filter.hasContactForm,
   );
@@ -265,6 +271,14 @@ function buildWhere(filter: SearchFilter, forCount = false, indexHint = ''): Bui
   if (filter.employeesMax !== undefined) {
     clauses.push('p.employees <= ?');
     params.push(filter.employeesMax);
+  }
+  if (filter.revenueMin !== undefined) {
+    clauses.push('p.revenue >= ?');
+    params.push(filter.revenueMin);
+  }
+  if (filter.revenueMax !== undefined) {
+    clauses.push('p.revenue <= ?');
+    params.push(filter.revenueMax);
   }
   if (filter.assignedFrom) {
     clauses.push('c.assignment_date >= ?');
@@ -383,7 +397,7 @@ export function* streamCompanies(
 
 const EXPORT_HEADER = [
   '法人番号', '商号', '法人格', '都道府県', '市区町村', '所在地', '郵便番号',
-  '法人種別', '法人番号指定年月日', '業種コード', '業種', '資本金', '従業員数',
+  '法人種別', '法人番号指定年月日', '業種コード', '業種', '資本金', '従業員数', '売上高',
   'サイト', '問い合わせフォーム', 'メール',
 ];
 
@@ -424,7 +438,7 @@ export function* toCsvLines(rows: Iterable<CompanyRow>): Generator<string, void,
     yield [
       r.corporate_number, r.name, r.corp_form, r.pref_name, r.city_name,
       r.address_full, r.post_code, r.kind, r.assignment_date,
-      r.industry_code, r.industry_name, r.capital, r.employees,
+      r.industry_code, r.industry_name, r.capital, r.employees, r.revenue,
       r.website_url, r.contact_form_url, r.contact_email,
     ].map(csvEscape).join(',');
   }
