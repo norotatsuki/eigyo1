@@ -83,6 +83,7 @@ export interface CompanyRow {
   website_url: string | null;
   contact_form_url: string | null;
   contact_email: string | null;
+  contact_tel: string | null;
   hiring: number | null;
   hiring_roles: string | null;
   representative: string | null;
@@ -95,7 +96,7 @@ const SELECT_COLUMNS = `
   c.corporate_number, c.name, c.corp_form, c.pref_name, c.city_name,
   c.address_full, c.post_code, c.kind, c.assignment_date,
   p.industry_code, p.industry_name, p.capital, p.employees, p.revenue,
-  p.website_url, p.contact_form_url, p.contact_email, p.hiring, p.hiring_roles,
+  p.website_url, p.contact_form_url, p.contact_email, p.contact_tel, p.hiring, p.hiring_roles,
   p.representative, p.business_evidence, p.field_sources
 `;
 

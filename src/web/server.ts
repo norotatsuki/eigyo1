@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { Db } from '../db/index.ts';
 import { loadMeta, type Meta } from '../search/meta.ts';
+import { scaleWithEstimates } from '../enrich/estimate.ts';
 import {
   countCompanies,
   searchCompanies,
@@ -118,7 +119,10 @@ function handle(db: Db, meta: Meta, req: IncomingMessage, res: ServerResponse): 
     const limit = Math.min(Number(q.get('limit') ?? 50) || 50, 500);
     const offset = Math.max(Number(q.get('offset') ?? 0) || 0, 0);
     const started = Date.now();
-    const rows = searchCompanies(db, filterFromParams(q), { ...optionsFromParams(q), limit, offset });
+    const rows = searchCompanies(db, filterFromParams(q), { ...optionsFromParams(q), limit, offset })
+      // 従業員数と年商は書いていない会社が多い。実測値が無い先には推定を添える。
+      // 実測か推定かは必ず区別して返す (画面と CSV でそのまま出す)
+      .map((r) => ({ ...r, scale: scaleWithEstimates(r.capital, r.employees, r.revenue) }));
     sendJson(res, 200, { rows, offset, limit, elapsedMs: Date.now() - started });
     return;
   }

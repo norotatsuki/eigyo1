@@ -15,7 +15,9 @@ import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
 import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
-import { crawlPendingHosts, rematchHosts, resetFailedHosts, scrubContactUrls } from './enrich/site/crawl.ts';
+import {
+  crawlPendingHosts, rematchHosts, repairRepresentatives, resetFailedHosts, scrubContactUrls,
+} from './enrich/site/crawl.ts';
 import { DEFAULT_EDITION, discoverFromDomainList } from './ingest/commoncrawl/domains.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
 import { enrichWithLlm } from './enrich/llm/enrich.ts';
@@ -571,10 +573,13 @@ function cmdRetry(db: Db, v: Values): void {
 function cmdScrub(db: Db): void {
   console.error('[点検] 集めてある問い合わせ先を見直します');
   const r = scrubContactUrls(db);
-  console.log(`点検 ${fmt(r.scanned)} 件 / 宛先から外した ${fmt(r.removed)} 件`);
+  console.log(`問い合わせ先 ${fmt(r.scanned)} 件 / 宛先から外した ${fmt(r.removed)} 件`);
   for (const [reason, n] of Object.entries(r.byReason).sort((a, b) => b[1] - a[1])) {
     console.log(`  ${reason.padEnd(10, '　')} ${fmt(n).padStart(6)}`);
   }
+
+  const rep = repairRepresentatives(db);
+  console.log(`代表者名 ${fmt(rep.scanned)} 件 / 直した ${fmt(rep.fixed)} 件 / 空欄に戻した ${fmt(rep.cleared)} 件`);
 }
 
 async function cmdCrawl(db: Db, v: Values): Promise<void> {

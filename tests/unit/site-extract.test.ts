@@ -264,4 +264,35 @@ describe('代表者名を拾う', () => {
   it('見出し語しか続かないなら取らない', () => {
     expect(findRepresentative('代表者 設立 2015年')).toBeNull();
   });
+
+  // 実データ: 講座の名前を人名として取っていた
+  it('漢字とカタカナが混ざった長い語は人名として取らない', () => {
+    expect(findRepresentative('代表者 発信力向上プログラム')).toBeNull();
+    expect(findRepresentative('代表者 統合マネジメントシステム')).toBeNull();
+  });
+
+  it('カタカナだけの名前は、姓名が分かれていれば取る', () => {
+    expect(findRepresentative('代表取締役 ジョン スミス')).toBe('ジョン スミス');
+    expect(findRepresentative('代表取締役 ジョン・スミス')).toBe('ジョン・スミス');
+  });
+
+  // 実データで残っていた取り違え
+  it('人名でない語を取らない', () => {
+    expect(findRepresentative('代表者 名鑑')).toBeNull();
+    expect(findRepresentative('代表者 など')).toBeNull();
+  });
+
+  it('見出し語の先頭 1 字が残った形を切る', () => {
+    expect(findRepresentative('代表者 猪又晃晴 設立')).toBe('猪又晃晴');
+  });
+
+  // 実データ: 見出しの「インタビュー」を人名として取っていた
+  it('区切りの無いカタカナ語は人名として取らない', () => {
+    expect(findRepresentative('代表者 インタビュー')).toBeNull();
+    expect(findRepresentative('代表者 プロフィール')).toBeNull();
+  });
+
+  it('長すぎるものは人名とみなさない', () => {
+    expect(findRepresentative('代表者 特定非営利活動')).toBeNull();
+  });
 });

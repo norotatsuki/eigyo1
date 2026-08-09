@@ -155,7 +155,7 @@ const NAME_CHARS = '[一-龥々ぁ-んァ-ヶー]';
  * 部署・組織を表す語と、人名にはまず現れない助詞で弾く。
  */
 const NOT_A_NAME =
-  /(部|課|室|係|会社|法人|組合|グループ|センター|事業|本部|支店|営業所|工場|一同|挨拶|紹介|案内|情報|の|を|は|が|に|で|と|も|ご|お|様|御)/;
+  /(部|課|室|係|会社|法人|組合|グループ|センター|事業|本部|支店|営業所|工場|一同|挨拶|紹介|案内|情報|名鑑|一覧|目次|概要|詳細|各位|より|から|まで|の|を|は|が|に|で|と|も|ご|お|様|御)/;
 
 /**
  * 会社概要の見出し語。代表者名の直後にはこれが続くことが多い。
@@ -167,21 +167,51 @@ const NOT_A_NAME =
 const PROFILE_LABELS = [
   '設立', '創業', '資本金', '所在地', '住所', '電話', '本社', '従業員', '事業', '業務', '沿革',
   '許可', '免許', '登録', '取引', '売上', '決算', '役員', '主要', '加盟', '認証', '営業', '代表',
+  // 役職と、代表者名の隣に置かれがちな見出し。
+  // 「岡本篤 専務取締役」「奥野久美子 制定日」から姓名だけを残すために要る
+  '専務', '常務', '監査', '取締', '制定', '改定', '施行', '理念', '方針', '沿革',
 ];
+
+/**
+ * 人名の形をしているか。
+ *
+ * 日本人の姓名は漢字で 2〜6 字にほぼ収まる (「勅使河原太郎」で 6 字)。
+ * カタカナだけの名前 (外国の方) もあるが、**漢字とカタカナが混ざった長い語**は
+ * まず人名ではない。
+ *
+ * 実データ: 「代表者 発信力向上プログラム」から「発信力向上プログラム」を
+ * 人名として取っていた。漢字 5 字 + カタカナ 5 字で、どの語も禁止語に無い。
+ * 長さと字種の並びで弾く。
+ */
+function looksLikePersonName(name: string, separated: boolean): boolean {
+  if (name.length < 2 || name.length > 6) return false;
+  const hasKanji = /[一-龥々]/.test(name);
+  const hasKana = /[ァ-ヶー]/.test(name);
+  // 漢字とカタカナが混ざるのは、社名や商品名にありがちな形
+  if (hasKanji && hasKana) return false;
+  // カタカナだけの人名は「ジョン・スミス」のように姓名を分けて書く。
+  // 区切りが無いカタカナ語は、まず人名ではない (実データ: 「インタビュー」)
+  if (hasKana && !hasKanji && !separated) return false;
+  // ひらがなだけの語も同じ。会社概要で姓名をひらがなだけで書くことはまず無い
+  // (実データ: 「など」を人名として取っていた)
+  if (!hasKanji && !hasKana) return false;
+  return true;
+}
 
 export function findRepresentative(text: string): string | null {
   for (const title of REP_TITLES) {
     // 「代表取締役 山田 太郎」「代表者：山田太郎」の形。
     // 区切りは原文のまま残す。姓と名の切れ目は書かれていない限り分からず、
     // 勝手に入れると「佐藤花子」を「佐藤花 子」にしてしまう
-    const re = new RegExp(`${title}\\s*[:：]?\\s*(${NAME_CHARS}{1,5})([\\s　]?)(${NAME_CHARS}{1,5})`);
+    const re = new RegExp(`${title}\\s*[:：]?\\s*(${NAME_CHARS}{1,5})([\\s　・]?)(${NAME_CHARS}{1,5})`);
     const m = text.match(re);
     if (!m?.[1] || !m[3]) continue;
 
     // 姓のうしろが見出し語なら、そこで切る (「宇佐美浩一 設立」→「宇佐美浩一」)
     let family = m[1];
     let given = m[3];
-    if (PROFILE_LABELS.some((w) => given === w || given.startsWith(w))) {
+    // 見出し語そのもの、または見出し語の先頭 1 字が残った形 (「猪又晃晴 設」) を切る
+    if (PROFILE_LABELS.some((w) => given === w || given.startsWith(w) || (given.length === 1 && w.startsWith(given)))) {
       if (family.length < 3) continue; // 姓だけでは短すぎる。人名と断定しない
       given = '';
     }
@@ -191,7 +221,7 @@ export function findRepresentative(text: string): string | null {
     }
 
     const joined = `${family}${given}`;
-    if (joined.length < 2 || joined.length > 10) continue;
+    if (!looksLikePersonName(joined, m[2] !== '')) continue;
     if (NOT_A_NAME.test(joined)) continue;
     if (PROFILE_LABELS.some((w) => joined.includes(w))) continue;
     // 役職名がそのまま続いただけのものを弾く

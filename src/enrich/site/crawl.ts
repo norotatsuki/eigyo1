@@ -342,6 +342,44 @@ export interface RematchResult {
   byMethod: Record<string, number>;
 }
 
+export interface RepairResult {
+  scanned: number;
+  fixed: number;
+  cleared: number;
+}
+
+/**
+ * 保存済みの代表者名を、いまの判定にかけ直す。
+ *
+ * 人名の判定を厳しくしても、直す前に集めた分は残る。サイトを訪ね直さなくても
+ * 保存してある値を読み直せば足りる (「代表者 <値>」として読ませる)。
+ *
+ * 直せるものは直し (「岡本篤 専務取締役」→「岡本篤」)、
+ * 人名でないもの (「経営ビジョン」「本社」) は空欄に戻す。
+ * 誤った値を残すより空欄の方がよい。
+ */
+export function repairRepresentatives(db: Db): RepairResult {
+  const rows = db
+    .prepare('SELECT host, corporate_number AS n, site_representative AS rep FROM web_hosts WHERE site_representative IS NOT NULL')
+    .all() as Array<{ host: string; n: string | null; rep: string }>;
+
+  const setHost = db.prepare('UPDATE web_hosts SET site_representative = ? WHERE host = ?');
+  const setProfile = db.prepare('UPDATE company_profiles SET representative = ? WHERE corporate_number = ?');
+
+  const result: RepairResult = { scanned: rows.length, fixed: 0, cleared: 0 };
+  db.transaction(() => {
+    for (const r of rows) {
+      const again = findRepresentative(`代表者 ${r.rep}`);
+      if (again === r.rep) continue;
+      setHost.run(again, r.host);
+      if (r.n) setProfile.run(again, r.n);
+      if (again === null) result.cleared++;
+      else result.fixed++;
+    }
+  })();
+  return result;
+}
+
 /**
  * 繋がらなかった先を、もう一度訪ねる対象に戻す。
  *
