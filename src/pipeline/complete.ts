@@ -107,7 +107,27 @@ export async function runToCompletion(
   // ① まだ訪ねていない先
   if (await drain('収集')) return result;
 
-  // ② 繋がらなかった先を、回数の上限まで訪ね直す。
+  /*
+   * ② 抽出を足す前に集めた先を訪ね直す。
+   *
+   * 繋がらなかった先の再挑戦より先に回す。実測 (2026-08-10):
+   *   訪ね直しの対象 44,453 件 … うち 31,647 件は既に宛先が取れている
+   *                              = 生きているサイト。代表者 0 件 / SNS 507 件
+   *                              つまり訪ねれば確実に埋まる。所要 62 分
+   *   再挑戦の対象  137,500 件 … 一度繋がらなかった先。大半は死んだドメインで
+   *                              歩留まりが低い。所要 3 時間超
+   * 確実に埋まる方を先に済ませれば、全項目が 3 時間早く揃う。
+   */
+  if (options.revisit !== false) {
+    const stale = requeueStale(db);
+    if (stale > 0) {
+      say('訪ね直し', `古い抽出のまま ${stale.toLocaleString('ja-JP')} 件`);
+      result.revisited = stale;
+      if (await drain('訪ね直し')) return result;
+    }
+  }
+
+  // ③ 繋がらなかった先を、回数の上限まで訪ね直す。
   //    一時的な不調で落ちた先が混ざっているため
   const retryable = (
     db
@@ -118,16 +138,6 @@ export async function runToCompletion(
     say('再挑戦', `繋がらなかった ${retryable.toLocaleString('ja-JP')} 件`);
     result.retried = resetFailedHosts(db);
     if (await drain('再挑戦')) return result;
-  }
-
-  // ③ 抽出を足す前に訪ねた先を訪ね直す (SNS・代表者名・事業内容・出典が空のため)
-  if (options.revisit !== false) {
-    const stale = requeueStale(db);
-    if (stale > 0) {
-      say('訪ね直し', `古い抽出のまま ${stale.toLocaleString('ja-JP')} 件`);
-      result.revisited = stale;
-      if (await drain('訪ね直し')) return result;
-    }
   }
 
   // ④ 集め終えてから、手元のデータだけで直せるものを直す。

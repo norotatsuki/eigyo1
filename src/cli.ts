@@ -594,7 +594,7 @@ async function cmdDomains(db: Db, v: Values): Promise<void> {
 
 async function cmdComplete(db: Db, v: Values): Promise<void> {
   const started = Date.now();
-  console.error('[完了まで] 収集 → 再挑戦 → 訪ね直し → 業種 → 再照合 → 点検 の順に回します');
+  console.error('[完了まで] 収集 → 訪ね直し → 再挑戦 → 業種 → 再照合 → 点検 の順に回します');
   console.error('[完了まで] 途中で止めても、次に実行すれば続きから始まります');
 
   const r = await runToCompletion(db, {
