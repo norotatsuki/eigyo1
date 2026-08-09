@@ -415,16 +415,18 @@ function socialCell(r, forRepresentative) {
     ? [['in', s.representativeLinkedin], ['f', s.representativeFacebook], ['ig', s.representativeInstagram]]
     : [['in', s.linkedin], ['f', s.facebook], ['ig', s.instagram], ['X', s.x]];
 
-  const parts = entries.filter(([, url]) => url);
-  if (parts.length === 0) return null;
   const box = document.createElement('span');
-  parts.forEach(([label, url], i) => {
-    if (i > 0) box.append(document.createTextNode(' '));
-    const a = link(label, url);
-    a.title = url;
-    box.append(a);
-  });
-  return box;
+  let any = false;
+  for (const [label, urls] of entries) {
+    for (const url of urls || []) {
+      if (any) box.append(document.createTextNode(' '));
+      const a = link(label, url);
+      a.title = url;
+      box.append(a);
+      any = true;
+    }
+  }
+  return any ? box : null;
 }
 
 /** 1 社を 1 行にする。指定された 11 項目をすべて列に出す。 */

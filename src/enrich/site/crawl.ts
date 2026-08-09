@@ -9,8 +9,9 @@ import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import {
   contactUrlRejectReason, emptySocialLinks, extractFromHtml, findBusinessDescription,
-  findRepresentative, findSocialLinks, toText, trimmedNameVariants,
-  type Extracted, type SocialLinks,
+  findRepresentative, findSocialLinks, hasAnySocial, normalizeSocialLinks,
+  toText, trimmedNameVariants,
+  type Extracted, type SocialKey, type SocialLinks,
 } from './extract.ts';
 import { extractScale } from './scale.ts';
 import { extractRecruit, findRecruitUrl, type Recruit } from './recruit.ts';
@@ -134,9 +135,12 @@ function absorb(acc: Accumulator, more: Extracted, url: string, html: string): v
 
   // SNS は footer に置かれることが多く、どのページからでも拾える。
   // 代表者名が先に取れていれば、本人のものかどうかも判じられる
+  // 複数のページに散らばっていることがあるので、重ならないよう足していく
   const social = findSocialLinks(html, acc.representative);
-  for (const key of Object.keys(acc.social) as Array<keyof SocialLinks>) {
-    if (acc.social[key] === null && social[key] !== null) acc.social[key] = social[key];
+  for (const key of Object.keys(acc.social) as SocialKey[]) {
+    for (const url of social[key]) {
+      if (!acc.social[key].includes(url)) acc.social[key].push(url);
+    }
   }
 }
 
@@ -357,6 +361,42 @@ export interface RepairResult {
   scanned: number;
   fixed: number;
   cleared: number;
+}
+
+/**
+ * 保存済みの SNS を、いまの形 (種類ごとの配列) に揃える。
+ *
+ * 途中で 1 件だけ持つ形から全件を残す形に変えたため、古い行が混ざっている。
+ * サイトを訪ね直す必要はなく、持っている値の形を直すだけ。
+ */
+export function normalizeStoredSocial(db: Db): RepairResult {
+  const result: RepairResult = { scanned: 0, fixed: 0, cleared: 0 };
+  for (const [table, column] of [['web_hosts', 'host'], ['company_profiles', 'corporate_number']] as const) {
+    const rows = db
+      .prepare(`SELECT ${column} AS id, social_links AS s FROM ${table} WHERE social_links IS NOT NULL`)
+      .all() as Array<{ id: string; s: string }>;
+    const set = db.prepare(`UPDATE ${table} SET social_links = ? WHERE ${column} = ?`);
+    db.transaction(() => {
+      for (const r of rows) {
+        result.scanned++;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(r.s);
+        } catch {
+          set.run(null, r.id);
+          result.cleared++;
+          continue;
+        }
+        const normalized = normalizeSocialLinks(parsed);
+        const text = hasAnySocial(normalized) ? JSON.stringify(normalized) : null;
+        if (text === r.s) continue;
+        set.run(text, r.id);
+        if (text === null) result.cleared++;
+        else result.fixed++;
+      }
+    })();
+  }
+  return result;
 }
 
 /**
@@ -738,9 +778,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
     const sources = c.sources && Object.keys(c.sources).length > 0 ? JSON.stringify(c.sources) : null;
     // 1 つも見つからなかったときは空の JSON を残さない (空欄と区別がつかなくなる)
-    const social = c.social && Object.values(c.social).some((v) => v !== null)
-      ? JSON.stringify(c.social)
-      : null;
+    const social = c.social && hasAnySocial(c.social) ? JSON.stringify(c.social) : null;
     update.run(
       'ok', now, c.httpStatus ?? null, null,
       info.name, info.address, info.tel, info.email, info.contactUrl, info.refusedText,

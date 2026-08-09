@@ -300,30 +300,121 @@ export function findBusinessDescription(text: string): string | null {
  * 「代表者の」欄に入れてはいけない。
  */
 export interface SocialLinks {
-  /** 会社のアカウント */
-  facebook: string | null;
-  instagram: string | null;
-  x: string | null;
-  linkedin: string | null;
+  /** 会社のアカウント。複数あればすべて残す */
+  facebook: string[];
+  instagram: string[];
+  x: string[];
+  linkedin: string[];
   /** 代表者本人と確認できたものだけ */
-  representativeLinkedin: string | null;
-  representativeFacebook: string | null;
-  representativeInstagram: string | null;
+  representativeLinkedin: string[];
+  representativeFacebook: string[];
+  representativeInstagram: string[];
 }
+
+export type SocialKey = keyof SocialLinks;
+
+const SOCIAL_KEYS: readonly SocialKey[] = [
+  'facebook', 'instagram', 'x', 'linkedin',
+  'representativeLinkedin', 'representativeFacebook', 'representativeInstagram',
+];
 
 export function emptySocialLinks(): SocialLinks {
   return {
-    facebook: null, instagram: null, x: null, linkedin: null,
-    representativeLinkedin: null, representativeFacebook: null, representativeInstagram: null,
+    facebook: [], instagram: [], x: [], linkedin: [],
+    representativeLinkedin: [], representativeFacebook: [], representativeInstagram: [],
   };
 }
 
-/** 共有ボタンや広告の URL。その会社のアカウントではない */
-const SHARE_LINK = /(sharer|share\.php|intent\/tweet|\/share\?|plugins\/|badge|developers\.facebook)/i;
+/**
+ * 保存済みの値を、いまの形 (種類ごとの配列) に揃える。
+ *
+ * 初めは 1 種類につき 1 件しか持っていなかった (文字列か null)。
+ * 途中で全件を残す形に変えたため、古い行と新しい行が混ざる。
+ * 文字列のまま画面に渡すと 1 文字ずつ並べてしまうので、必ずここを通す。
+ */
+export function normalizeSocialLinks(value: unknown): SocialLinks {
+  const out = emptySocialLinks();
+  if (typeof value !== 'object' || value === null) return out;
+  const record = value as Record<string, unknown>;
+  for (const key of SOCIAL_KEYS) {
+    const v = record[key];
+    if (typeof v === 'string' && v.length > 0) out[key] = [v];
+    else if (Array.isArray(v)) out[key] = v.filter((x): x is string => typeof x === 'string' && x.length > 0);
+  }
+  return out;
+}
 
-/** 個人プロフィールの形をしているか。LinkedIn だけは構造で見分けられる */
-const LINKEDIN_PERSON = /linkedin\.com\/in\//i;
-const LINKEDIN_COMPANY = /linkedin\.com\/(company|school)\//i;
+export function hasAnySocial(s: SocialLinks): boolean {
+  return SOCIAL_KEYS.some((k) => s[k].length > 0);
+}
+
+/**
+ * アカウントではない道筋。
+ *
+ * SNS のドメインに向いた URL のうち、会社のアカウントを指していないもの。
+ * 実データで拾いかけたもの:
+ *   facebook.com/tr?ev=…        計測タグ (Facebook ピクセル)
+ *   platform.twitter.com/…      埋め込み用のスクリプト
+ *   x.com/wix-html-editor-…     サイト作成ツールの部品
+ *   instagram.com/p/…           個々の投稿。アカウントそのものではない
+ */
+const NOT_AN_ACCOUNT = new RegExp(
+  [
+    '/tr\\b', '/sharer', '/share\\b', '/dialog/', '/plugins/', '/2008/fbml', '/intent/',
+    '/pin/create', 'widgets\\.js', '/embed', '/oembed',
+    '/p/', '/reel/', '/reels/', '/explore/', '/accounts/', '/stories/',
+    '/hashtag/', '/search', '/i/', '/home\\b', '/login', '/help\\b',
+    '/shareArticle', '/sharing/', '/pub/dir/', '/feed/',
+    'wix-', 'squarespace', 'shopify', 'wordpress',
+  ].join('|'),
+  'i',
+);
+
+/** 名前の部分が会員名になっていない (プラットフォーム側の予約語) もの。 */
+const RESERVED_HANDLE = new Set([
+  'home', 'about', 'login', 'signup', 'help', 'privacy', 'terms', 'legal', 'settings',
+  'share', 'sharer', 'intent', 'search', 'explore', 'directory', 'business', 'developers',
+  'studio', 'watch', 'events', 'marketplace', 'pages', 'profile.php',
+]);
+
+/** 埋め込み用の下位ドメイン。会社のアカウントではない */
+const PLATFORM_SUBDOMAIN = /^(platform|developers?|connect|badge|apps|business|graph|static|cdn)\./i;
+
+/** SNS の URL を種類ごとに振り分ける。アカウントでなければ null。 */
+function classifySocial(raw: string, base: string): { key: 'facebook' | 'instagram' | 'x' | 'linkedin'; url: string; personal: boolean } | null {
+  let url: URL;
+  try {
+    url = new URL(raw, base);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase();
+  if (PLATFORM_SUBDOMAIN.test(host)) return null;
+  const bare = host.replace(/^www\./, '');
+
+  // 追跡用の飾りは宛先の一部ではない。落として揃える
+  url.search = '';
+  url.hash = '';
+  const full = url.toString().replace(/\/$/, '');
+  const path = url.pathname.replace(/\/$/, '');
+  if (path === '' || path === '/') return null; // トップページはアカウントではない
+  if (NOT_AN_ACCOUNT.test(url.pathname)) return null;
+
+  const handle = (path.split('/').filter(Boolean)[0] ?? '').toLowerCase();
+  if (RESERVED_HANDLE.has(handle)) return null;
+
+  if (bare === 'linkedin.com') {
+    if (/^\/in\//i.test(path)) return { key: 'linkedin', url: full, personal: true };
+    if (/^\/(company|school|showcase)\//i.test(path)) return { key: 'linkedin', url: full, personal: false };
+    return null;
+  }
+  if (bare === 'facebook.com' || bare === 'fb.com' || bare === 'fb.me') {
+    return { key: 'facebook', url: full, personal: false };
+  }
+  if (bare === 'instagram.com') return { key: 'instagram', url: full, personal: false };
+  if (bare === 'twitter.com' || bare === 'x.com') return { key: 'x', url: full, personal: false };
+  return null;
+}
 
 /** リンクの近くに代表者名があるか。あればその人のものとみなしてよい */
 function nearRepresentative(html: string, href: string, representative: string | null): boolean {
@@ -335,43 +426,67 @@ function nearRepresentative(html: string, href: string, representative: string |
   return around.includes(representative) || around.includes(representative.replace(/[\s　]/g, ''));
 }
 
+/**
+ * サイトに載っている SNS のアカウントを集める。
+ *
+ * **会社のアカウントと、代表者個人のアカウントは別物である。**
+ * 実測 (無作為 150 社): 何らかの SNS があるのは 45%、しかし
+ * 代表者個人の LinkedIn (`/in/`) は 0 件、代表者名が近くにある個人
+ * プロフィールも 0 件だった。日本の企業サイトに代表者個人の SNS はまず載らない。
+ *
+ * したがってここで取れるものの大半は **会社の** アカウントである。
+ * 代表者のものと言えるのは、個人プロフィールの形をしていて、かつ
+ * その近くに代表者名が書かれている場合だけ。確認できないものを
+ * 「代表者の」欄に入れてはいけない。
+ *
+ * 探す場所は 2 つ:
+ *   1. `href` のリンク (大半はここ)
+ *   2. JSON-LD の `sameAs` — 会社が「これが公式です」と宣言している箇所。
+ *      使っているのは 4% だが、宣言である分だけ確かで、リンクより信用できる
+ */
 export function findSocialLinks(html: string, representative: string | null = null): SocialLinks {
   const found = emptySocialLinks();
+  const seen = new Set<string>();
 
-  for (const m of html.matchAll(/href=["']([^"']+)["']/gi)) {
-    const href = (m[1] ?? '').trim();
-    if (href.length === 0 || SHARE_LINK.test(href)) continue;
-    let url: URL;
-    try {
-      url = new URL(href, 'https://example.invalid');
-    } catch {
-      continue;
-    }
-    if (url.hostname === 'example.invalid') continue; // 相対リンクは SNS ではない
-    const host = url.hostname.replace(/^www\./, '').toLowerCase();
-    // 追跡用の飾り (?ref_src=twsrc%5Etfw など) は宛先の一部ではない。落として揃える
-    url.search = '';
-    url.hash = '';
-    const full = url.toString().replace(/\/$/, '');
-    const own = nearRepresentative(html, href, representative);
+  const add = (key: SocialKey, url: string): void => {
+    if (seen.has(url)) return;
+    seen.add(url);
+    found[key].push(url);
+  };
 
-    if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
-      if (LINKEDIN_PERSON.test(full)) {
-        // 個人プロフィール。代表者名が近くにあるときだけ代表者のものとする
-        if (own && !found.representativeLinkedin) found.representativeLinkedin = full;
-      } else if (LINKEDIN_COMPANY.test(full) && !found.linkedin) {
-        found.linkedin = full;
-      }
-    } else if (host === 'facebook.com' || host === 'fb.com') {
-      if (own && !found.representativeFacebook) found.representativeFacebook = full;
-      else if (!found.facebook) found.facebook = full;
-    } else if (host === 'instagram.com') {
-      if (own && !found.representativeInstagram) found.representativeInstagram = full;
-      else if (!found.instagram) found.instagram = full;
-    } else if ((host === 'twitter.com' || host === 'x.com') && !found.x) {
-      found.x = full;
+  const base = 'https://example.invalid';
+
+  // ① 会社が宣言している公式アカウント (JSON-LD の sameAs)
+  for (const block of html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    for (const m of (block[1] ?? '').matchAll(/"(https?:\/\/[^"\s]+)"/g)) {
+      const c = classifySocial(m[1] ?? '', base);
+      if (!c) continue;
+      // 宣言に載るのは会社の公式アカウント。個人プロフィールでもここでは会社扱いにしない
+      add(c.personal ? 'representativeLinkedin' : c.key, c.url);
     }
   }
+
+  // ② 本文のリンク
+  for (const m of html.matchAll(/href=["']([^"']+)["']/gi)) {
+    const href = (m[1] ?? '').trim();
+    if (href.length === 0) continue;
+    const c = classifySocial(href, base);
+    if (!c) continue;
+
+    if (c.personal) {
+      // LinkedIn の個人プロフィール。代表者名が近くにあるときだけ代表者のものとする
+      if (nearRepresentative(html, href, representative)) add('representativeLinkedin', c.url);
+      continue;
+    }
+    if (nearRepresentative(html, href, representative)) {
+      if (c.key === 'facebook') add('representativeFacebook', c.url);
+      else if (c.key === 'instagram') add('representativeInstagram', c.url);
+      else add(c.key, c.url);
+      continue;
+    }
+    add(c.key, c.url);
+  }
+
   return found;
 }
 

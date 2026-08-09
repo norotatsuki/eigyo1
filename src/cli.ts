@@ -16,8 +16,8 @@ import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
 import {
-  crawlPendingHosts, rematchHosts, repairBusinessEvidence, repairRepresentatives,
-  resetFailedHosts, scrubContactUrls,
+  crawlPendingHosts, normalizeStoredSocial, rematchHosts, repairBusinessEvidence,
+  repairRepresentatives, resetFailedHosts, scrubContactUrls,
 } from './enrich/site/crawl.ts';
 import { DEFAULT_EDITION, discoverFromDomainList } from './ingest/commoncrawl/domains.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
@@ -591,6 +591,9 @@ function cmdScrub(db: Db): void {
 
   const biz = repairBusinessEvidence(db);
   console.log(`事業内容 ${fmt(biz.scanned)} 件 / 直した ${fmt(biz.fixed)} 件 / 空欄に戻した ${fmt(biz.cleared)} 件`);
+
+  const sns = normalizeStoredSocial(db);
+  console.log(`SNS ${fmt(sns.scanned)} 件 / 形を揃えた ${fmt(sns.fixed)} 件 / 空欄に戻した ${fmt(sns.cleared)} 件`);
 }
 
 async function cmdCrawl(db: Db, v: Values): Promise<void> {

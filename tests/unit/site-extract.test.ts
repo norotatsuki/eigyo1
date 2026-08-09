@@ -8,6 +8,8 @@ import {
   findObfuscatedEmail,
   findRepresentative,
   findSocialLinks,
+  hasAnySocial,
+  normalizeSocialLinks,
   findRefusal,
   findTel,
   nameFromCopyright,
@@ -330,7 +332,7 @@ describe('事業内容を本文から取る', () => {
   });
 });
 
-describe('SNS のリンクを集める', () => {
+describe('SNS のアカウントを集める', () => {
   it('会社のアカウントを種類ごとに取る', () => {
     const html = `
       <a href="https://www.facebook.com/kaisha">Facebook</a>
@@ -338,47 +340,109 @@ describe('SNS のリンクを集める', () => {
       <a href="https://x.com/kaisha">X</a>
       <a href="https://www.linkedin.com/company/kaisha/">LinkedIn</a>`;
     const s = findSocialLinks(html);
-    expect(s.facebook).toContain('facebook.com/kaisha');
-    expect(s.instagram).toContain('instagram.com/kaisha');
-    expect(s.x).toContain('x.com/kaisha');
-    expect(s.linkedin).toContain('linkedin.com/company/kaisha');
+    expect(s.facebook).toEqual(['https://www.facebook.com/kaisha']);
+    expect(s.instagram).toEqual(['https://www.instagram.com/kaisha']);
+    expect(s.x).toEqual(['https://x.com/kaisha']);
+    expect(s.linkedin).toEqual(['https://www.linkedin.com/company/kaisha']);
   });
 
-  it('共有ボタンは会社のアカウントではない', () => {
-    const html = '<a href="https://www.facebook.com/sharer/sharer.php?u=https://kaisha.co.jp">共有</a>';
-    expect(findSocialLinks(html).facebook).toBeNull();
+  it('同じ種類が複数あれば全部取る', () => {
+    const html = `
+      <a href="https://www.instagram.com/kaisha">本店</a>
+      <a href="https://www.instagram.com/kaisha_shop">直営店</a>
+      <a href="https://www.instagram.com/kaisha">重複</a>`;
+    expect(findSocialLinks(html).instagram).toEqual([
+      'https://www.instagram.com/kaisha',
+      'https://www.instagram.com/kaisha_shop',
+    ]);
+  });
+
+  // 会社が「これが公式です」と宣言している箇所。リンクより確か
+  it('JSON-LD の sameAs から取る', () => {
+    const html = `<script type="application/ld+json">
+      {"@type":"Organization","name":"株式会社サンプル",
+       "sameAs":["https://www.facebook.com/kaisha","https://www.linkedin.com/company/kaisha"]}
+    </script>`;
+    const s = findSocialLinks(html);
+    expect(s.facebook).toEqual(['https://www.facebook.com/kaisha']);
+    expect(s.linkedin).toEqual(['https://www.linkedin.com/company/kaisha']);
+  });
+
+  // 実データで拾いかけたもの。いずれもアカウントではない
+  it('アカウントでない URL を取らない', () => {
+    const html = `
+      <img src="https://www.facebook.com/tr?id=123&ev=PageView">
+      <a href="https://www.facebook.com/sharer/sharer.php?u=x">共有</a>
+      <script src="//platform.twitter.com/widgets.js"></script>
+      <a href="https://x.com/wix-html-editor-pages-webapp">部品</a>
+      <a href="https://www.instagram.com/p/ABC123/">投稿</a>
+      <a href="https://twitter.com/intent/tweet">ツイート</a>
+      <html xmlns:fb="http://www.facebook.com/2008/fbml">`;
+    const s = findSocialLinks(html);
+    expect(s.facebook).toEqual([]);
+    expect(s.x).toEqual([]);
+    expect(s.instagram).toEqual([]);
+  });
+
+  it('プラットフォームの予約語はアカウントではない', () => {
+    expect(findSocialLinks('<a href="https://www.facebook.com/business">Facebook</a>').facebook).toEqual([]);
+    expect(findSocialLinks('<a href="https://x.com/home">X</a>').x).toEqual([]);
   });
 
   // 実測 (無作為 150 社): 代表者個人の LinkedIn は 0 件だった。
   // 見つかるのは会社のアカウント。確認できないものを代表者の欄に入れない
   it('個人プロフィールでも、代表者名が近くになければ代表者のものとしない', () => {
     const html = '<a href="https://www.linkedin.com/in/someone">LinkedIn</a>';
-    expect(findSocialLinks(html, '山田 太郎').representativeLinkedin).toBeNull();
+    const s = findSocialLinks(html, '山田 太郎');
+    expect(s.representativeLinkedin).toEqual([]);
+    expect(s.linkedin).toEqual([]); // 個人プロフィールを会社の欄にも入れない
   });
 
   it('代表者名が近くにあれば代表者のものとする', () => {
     const html = '<p>代表取締役 山田 太郎 <a href="https://www.linkedin.com/in/taro-yamada">プロフィール</a></p>';
-    expect(findSocialLinks(html, '山田 太郎').representativeLinkedin).toContain('/in/taro-yamada');
+    expect(findSocialLinks(html, '山田 太郎').representativeLinkedin)
+      .toEqual(['https://www.linkedin.com/in/taro-yamada']);
   });
 
   it('書き方が違っても代表者名を照合する', () => {
     // 抽出した名前は「山田 太郎」でも、本文は「山田太郎」と書かれていることがある
     const html = '<p>代表取締役 山田太郎 <a href="https://www.facebook.com/taro.yamada">Facebook</a></p>';
     const s = findSocialLinks(html, '山田 太郎');
-    expect(s.representativeFacebook).toContain('facebook.com/taro.yamada');
-    expect(s.facebook).toBeNull(); // 代表者のものを会社の欄に重複させない
+    expect(s.representativeFacebook).toEqual(['https://www.facebook.com/taro.yamada']);
+    expect(s.facebook).toEqual([]); // 代表者のものを会社の欄に重複させない
   });
 
-  // 実データ: 埋め込み用の飾りが付いたまま保存されていた
   it('追跡用の飾りを落とす', () => {
     const html = '<a href="https://twitter.com/kaisha?ref_src=twsrc%5Etfw">Twitter</a>';
-    expect(findSocialLinks(html).x).toBe('https://twitter.com/kaisha');
+    expect(findSocialLinks(html).x).toEqual(['https://twitter.com/kaisha']);
   });
 
   it('SNS が無ければ何も取らない', () => {
-    expect(findSocialLinks('<a href="/company/">会社概要</a>')).toEqual({
-      facebook: null, instagram: null, x: null, linkedin: null,
-      representativeLinkedin: null, representativeFacebook: null, representativeInstagram: null,
-    });
+    const s = findSocialLinks('<a href="/company/">会社概要</a>');
+    expect(hasAnySocial(s)).toBe(false);
+  });
+});
+
+describe('保存済みの SNS の形を揃える', () => {
+  // 初めは 1 件しか持たない形だった。古い行と新しい行が混ざる
+  it('古い形 (文字列) を配列にする', () => {
+    const old = { facebook: 'https://www.facebook.com/kaisha', instagram: null, x: null, linkedin: null };
+    const s = normalizeSocialLinks(old);
+    expect(s.facebook).toEqual(['https://www.facebook.com/kaisha']);
+    expect(s.instagram).toEqual([]);
+  });
+
+  it('新しい形はそのまま通す', () => {
+    const now = { facebook: ['https://www.facebook.com/a', 'https://www.facebook.com/b'] };
+    expect(normalizeSocialLinks(now).facebook).toEqual([
+      'https://www.facebook.com/a', 'https://www.facebook.com/b',
+    ]);
+  });
+
+  it('壊れた値でも落ちない', () => {
+    expect(hasAnySocial(normalizeSocialLinks(null))).toBe(false);
+    expect(hasAnySocial(normalizeSocialLinks('文字列'))).toBe(false);
+    expect(normalizeSocialLinks({ facebook: [1, null, 'https://www.facebook.com/x'] }).facebook)
+      .toEqual(['https://www.facebook.com/x']);
   });
 });
