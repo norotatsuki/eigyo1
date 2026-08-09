@@ -10,6 +10,7 @@ import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import { contactUrlRejectReason, extractFromHtml, toText, trimmedNameVariants, type Extracted } from './extract.ts';
 import { extractScale } from './scale.ts';
 import { extractRecruit, findRecruitUrl, type Recruit } from './recruit.ts';
+import { SOURCE as DOMAIN_LIST_SOURCE } from '../../ingest/commoncrawl/domains.ts';
 
 /** 会社概要から拾えた規模。1 つも取れなければ出典も残さない。 */
 function scaleOf(text: string): {
@@ -250,6 +251,22 @@ export interface RematchResult {
   byMethod: Record<string, number>;
 }
 
+/**
+ * 繋がらなかった先を、もう一度訪ねる対象に戻す。
+ *
+ * 取得の仕方を直したときに使う。サイト側は変わっていないので、
+ * 直した分だけ結果が変わる。一度も繋がらなかった先だけが対象で、
+ * 内容が取れている先には触らない。
+ */
+export function resetFailedHosts(db: Db, error = '接続できません'): number {
+  return db
+    .prepare(
+      `UPDATE web_hosts SET crawl_status = 'pending', error = NULL, crawled_at = NULL, http_status = NULL
+        WHERE crawl_status = 'failed' AND error = ?`,
+    )
+    .run(error).changes;
+}
+
 export interface ScrubResult {
   scanned: number;
   removed: number;
@@ -380,9 +397,22 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
   const concurrency = options.concurrency ?? 6;
   const politeMs = options.politeMs ?? 300;
 
+  /**
+   * 訪ねる順。ドメイン一覧から来た先を先に回す。
+   *
+   * 一覧は重要な順に並んでいて、中身も会社の登録ドメインそのもの。
+   * 一方、索引から来た先には `5pmjournal.0101.co.jp` のような
+   * 既に消えた下位ドメインが多く混ざっており、繋がるまで待つ分だけ遅い。
+   *
+   * 名前順にすると「0」や「あ」から始まる小さな会社ばかりが先に埋まり、
+   * 途中で止めたときの手元が偏る。
+   */
   const hosts = db
-    .prepare("SELECT host FROM web_hosts WHERE crawl_status = 'pending' ORDER BY host LIMIT ?")
-    .all(limit) as Array<{ host: string }>;
+    .prepare(
+      `SELECT host FROM web_hosts WHERE crawl_status = 'pending'
+        ORDER BY CASE WHEN source = ? THEN 0 ELSE 1 END, rowid LIMIT ?`,
+    )
+    .all(DOMAIN_LIST_SOURCE, limit) as Array<{ host: string }>;
 
   const update = db.prepare(
     `UPDATE web_hosts SET crawl_status = ?, crawled_at = ?, http_status = ?, error = ?,
@@ -435,12 +465,25 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
    * 1 社への当たり方を強めているわけではない。
    */
   const collect = async (host: string): Promise<Collected> => {
-    const origin = `https://${host}`;
-    if (!(await robotsAllows(origin, ['/', ...PROFILE_PATHS]))) {
-      return { host, origin, status: 'disallowed', error: 'robots.txt により不可' };
+    // ドメイン一覧が渡してくるのは会社の登録名 (mazda.co.jp) だが、
+    // 実際のサイトは www 付きでしか応答しない会社が多い。
+    // 実測: 繋がらなかった先の 65% は www を付けると通った (40 件中 26 件)
+    const origins = host.startsWith('www.')
+      ? [`https://${host}`]
+      : [`https://${host}`, `https://www.${host}`];
+
+    let origin = origins[0]!;
+    let top: { status: number; body: string } | null = null;
+    for (const candidate of origins) {
+      origin = candidate;
+      if (!(await robotsAllows(origin, ['/', ...PROFILE_PATHS]))) {
+        return { host, origin, status: 'disallowed', error: 'robots.txt により不可' };
+      }
+      top = await fetchText(`${origin}/`);
+      if (top && top.body !== '') break;
+      if (candidate !== origins[origins.length - 1]) await sleep(politeMs);
     }
 
-    const top = await fetchText(`${origin}/`);
     if (!top || top.body === '') {
       return {
         host, origin, status: 'failed',

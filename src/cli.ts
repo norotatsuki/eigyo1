@@ -15,7 +15,7 @@ import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
 import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
-import { crawlPendingHosts, rematchHosts, scrubContactUrls } from './enrich/site/crawl.ts';
+import { crawlPendingHosts, rematchHosts, resetFailedHosts, scrubContactUrls } from './enrich/site/crawl.ts';
 import { DEFAULT_EDITION, discoverFromDomainList } from './ingest/commoncrawl/domains.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
 import { enrichWithLlm } from './enrich/llm/enrich.ts';
@@ -63,6 +63,7 @@ const USAGE = `
   domains  Common Crawl のドメイン一覧から企業サイトを集める (索引より速い)
   rematch  収集済みのデータだけで突き合わせをやり直す (サイトは訪ねない)
   scrub    送ってはいけない問い合わせ先 (SNS・採用窓口など) を宛先から外す
+  retry    繋がらなかった先を訪問対象に戻す (取得の仕方を直したとき)
 
   gbiz     gBizINFO (経済産業省) から取り込む
     --search               条件を gBizINFO に投げて、当てはまる法人を取り込む
@@ -561,6 +562,12 @@ async function cmdDomains(db: Db, v: Values): Promise<void> {
   );
 }
 
+function cmdRetry(db: Db, v: Values): void {
+  const reason = typeof v.reason === 'string' ? v.reason : '接続できません';
+  const n = resetFailedHosts(db, reason);
+  console.log(`「${reason}」で終わった ${fmt(n)} 件を訪問対象に戻しました`);
+}
+
 function cmdScrub(db: Db): void {
   console.error('[点検] 集めてある問い合わせ先を見直します');
   const r = scrubContactUrls(db);
@@ -917,6 +924,9 @@ async function main(): Promise<void> {
         break;
       case 'domains':
         await cmdDomains(db, v);
+        break;
+      case 'retry':
+        cmdRetry(db, v);
         break;
       case 'scrub':
         cmdScrub(db);
