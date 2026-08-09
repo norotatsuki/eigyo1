@@ -32,7 +32,14 @@ function scaleOf(text: string): {
 }
 
 const USER_AGENT = 'eigyo1-site-collector/0.1 (internal sales list builder)';
-const TIMEOUT_MS = 15_000;
+/**
+ * 1 要求の待ち上限。
+ *
+ * 実測 (未訪問 200 件): 取れた先の応答は 中央 620ms / 99% 3.7 秒 / 最大 5.0 秒。
+ * 15 秒まで待つ意味は無く、繋がらない先を掴んだまま枠を塞ぐだけだった。
+ * 8 秒に下げても取りこぼしは 0 件 (同じ 200 件で確認)。
+ */
+const TIMEOUT_MS = 8_000;
 /**
  * 1 ページから読む上限。
  *

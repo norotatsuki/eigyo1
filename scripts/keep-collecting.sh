@@ -16,6 +16,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 DB=${DB:-data/eigyo.db}
+# 同時に当たる相手の数。相手はすべて別のサイトなので、1 社への負荷は増えない。
+# 上げられるのは 1 ページの上限を 700 KB に下げてメモリが収まったため
+CONCURRENCY=${CONCURRENCY:-96}
 LOG=${LOG:-.complete.log}
 STOP=.stop-collecting
 MAX_ROUNDS=${MAX_ROUNDS:-40}
@@ -39,13 +42,13 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
   left=$(pending)
   if [ "$left" = "0" ]; then
     say "未訪問がありません。仕上げ (業種・再照合・点検) を回します"
-    node --experimental-strip-types src/cli.ts complete --concurrency 48 >> "$LOG" 2>&1
+    node --experimental-strip-types src/cli.ts complete --concurrency ${CONCURRENCY:-96} >> "$LOG" 2>&1
     say "完了しました"
     exit 0
   fi
 
   say "${round} 回目 — 未訪問 ${left} 件"
-  node --experimental-strip-types src/cli.ts complete --concurrency 48 >> "$LOG" 2>&1
+  node --experimental-strip-types src/cli.ts complete --concurrency ${CONCURRENCY:-96} >> "$LOG" 2>&1
   code=$?
 
   if [ $code -eq 0 ]; then
