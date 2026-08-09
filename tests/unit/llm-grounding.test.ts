@@ -131,7 +131,19 @@ describe('サイトの抽出', () => {
   });
 
   it('本文が長すぎるときは切り詰める (費用がかさむため)', () => {
-    expect(trimForLlm('あ'.repeat(9000)).length).toBe(4000);
+    // 目印が無ければ前半をそのまま使う
+    expect(trimForLlm('あ'.repeat(9000)).length).toBe(1500);
+  });
+
+  it('会社情報の周辺だけを抜き出す (費用が 1/3 になる)', () => {
+    const noise = 'ど'.repeat(3000);
+    const text = `${noise}会社概要 株式会社サンプル 〒100-0001 東京都千代田区 TEL 03-1234-5678${noise}`;
+    const out = trimForLlm(text);
+    expect(out).toContain('株式会社サンプル');
+    expect(out).toContain('03-1234-5678');
+    expect(out.length).toBeLessThan(1600);
+    // 無関係な部分を丸ごと持って行かないこと
+    expect(out.split('ど').length - 1).toBeLessThan(400);
   });
 });
 

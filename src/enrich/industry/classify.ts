@@ -10,6 +10,7 @@ import { analyze, type Db } from '../../db/index.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import { divisionName } from './classification.ts';
 import { CORP_FORM_RULES, KEYWORD_RULES, OVERRIDE_RULES } from './rules.ts';
+import { classifyFromText } from './from-text.ts';
 
 /** 推定の出典名。company_profiles.industry_source に入る値。 */
 export const SOURCE_NAME_INFERENCE = 'name_inference';
@@ -145,8 +146,12 @@ export function classifyAll(db: Db, options: ClassifyOptions = {}): ClassifyResu
   // 反復子を開いたまま書き込むことはできない (better-sqlite3 が拒否する) ため、
   // id で区切って読み切ってから書く。
   const pageSize = options.pageSize ?? 20_000;
+  // 収集済みのサイト本文があれば併せて見る。商号だけでは 2 割しか当たらない
   const page = db.prepare(
-    `SELECT c.id AS id, c.corporate_number AS n, c.name_core AS core, c.corp_form AS form
+    `SELECT c.id AS id, c.corporate_number AS n, c.name_core AS core, c.corp_form AS form,
+            (SELECT h.site_text FROM web_hosts h
+              WHERE h.corporate_number = c.corporate_number AND h.site_text IS NOT NULL
+              LIMIT 1) AS site_text
        FROM corporations c
       WHERE c.id > ? ${activeOnly ? 'AND c.is_active = 1' : ''}
       ORDER BY c.id
@@ -160,13 +165,25 @@ export function classifyAll(db: Db, options: ClassifyOptions = {}): ClassifyResu
       n: string;
       core: string;
       form: string | null;
+      site_text: string | null;
     }>;
     if (rows.length === 0) break;
 
     const batch: Array<{ n: string; hit: Inference }> = [];
     for (const row of rows) {
       scanned++;
-      const hit = inferIndustry(row.core, row.form);
+      // 商号で当たらなければ本文を見る (LLM を使わずに済む分はここで済ませる)
+      let hit = inferIndustry(row.core, row.form);
+      if (!hit && row.site_text) {
+        const fromText = classifyFromText(row.site_text);
+        if (fromText) {
+          hit = {
+            code: fromText.code, name: fromText.name,
+            confidence: fromText.confidence,
+            matched: `本文:${fromText.matched}×${fromText.occurrences}`,
+          };
+        }
+      }
       if (hit && hit.confidence >= minConfidence) {
         batch.push({ n: row.n, hit });
         inferred++;

@@ -18,6 +18,7 @@ import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } fr
 import { crawlPendingHosts, rematchHosts } from './enrich/site/crawl.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
 import { enrichWithLlm } from './enrich/llm/enrich.ts';
+import { trimForLlm } from './enrich/llm/extract.ts';
 import { applyGate, recordOutreach, CHANNEL_POLICY, type Channel } from './outreach/gate.ts';
 import { CONFIG_PATH, PRESET_DAILY_CAP, checkChannelReady, configTemplate, loadConfig } from './outreach/config.ts';
 import { runCampaign } from './outreach/campaign.ts';
@@ -63,6 +64,8 @@ const USAGE = `
     --classify             業種の分類もかける
     --model <名前>         既定 gpt-4o-mini
     --estimate             費用の見積もりだけ出して終わる
+    ※ 絞り込みの指定 (--pref / --industry など) を付けると、
+      その範囲だけを補完します。全件にかける必要はまずありません
     ※ 鍵は環境変数 OPENAI_API_KEY から読みます
     ※ 抽出した値は原文に含まれることを確かめてから採用します
        (LLM が作った宛先を使わないため)
@@ -348,7 +351,7 @@ async function cmdDiscover(db: Db, v: Values): Promise<void> {
   );
 }
 
-async function cmdLlm(db: Db, v: Values): Promise<void> {
+async function cmdLlm(db: Db, v: Values, base: SearchFilter | null): Promise<void> {
   const limit = num(v.limit) ?? 50;
   const classify = v.classify === true;
 
@@ -366,14 +369,21 @@ async function cmdLlm(db: Db, v: Values): Promise<void> {
     console.error('[LLM] これらは crawl で訪ね直すと対象になります');
   }
 
-  // 1 件あたり 入力 4000 文字 + 出力 100 文字 を目安に見積もる
-  const perCall = { input: roughTokens('あ'.repeat(4000)), output: 100 };
+  // 見積もりは推測ではなく実データから。抜粋したあとの長さを実際に測る
+  const sample = db.prepare(
+    `SELECT site_text FROM web_hosts WHERE crawl_status = 'ok' AND site_text IS NOT NULL LIMIT 200`,
+  ).all() as Array<{ site_text: string }>;
+  const avgChars = sample.length > 0
+    ? sample.reduce((a, r) => a + trimForLlm(r.site_text).length, 0) / sample.length
+    : 1500;
+  const perCall = { input: roughTokens('あ'.repeat(Math.round(avgChars))), output: 100 };
   const calls = Math.min(limit, target.n) * (classify ? 2 : 1);
   const pricing = { inputPerMillion: 0.15, outputPerMillion: 0.6, currency: 'USD' };
   const estimate = estimateCost(
     { promptTokens: perCall.input * calls, completionTokens: perCall.output * calls, calls },
     pricing,
   );
+  console.error(`[LLM] 1 件あたり 約 ${Math.round(avgChars)} 文字を送ります (抜粋後・実測)`);
   console.error(`[LLM] 見積もり: ${fmt(calls)} 回 / 約 $${estimate.toFixed(2)} (gpt-4o-mini の単価で計算)`);
   const forAll = (estimate / Math.max(1, Math.min(limit, target.n))) * target.n;
   if (target.n > limit) console.error(`[LLM] 全 ${fmt(target.n)} 件なら 約 $${forAll.toFixed(2)}`);
@@ -395,6 +405,7 @@ async function cmdLlm(db: Db, v: Values): Promise<void> {
 
   const r = await enrichWithLlm(db, llm, {
     limit, classify, pricing,
+    ...(base || v.pref || v.industry || v.keyword ? { scope: toFilter(v, base) } : {}),
     onProgress: (done, matched, cost) => {
       if (done % 10 === 0) console.error(`[LLM] ${fmt(done)} 件 / 新たに紐付き ${fmt(matched)} / 約 $${cost.toFixed(3)}`);
     },
@@ -769,7 +780,7 @@ async function main(): Promise<void> {
         cmdRematch(db);
         break;
       case 'llm':
-        await cmdLlm(db, v);
+        await cmdLlm(db, v, base);
         break;
       case 'crawl':
         await cmdCrawl(db, v);

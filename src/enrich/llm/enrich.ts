@@ -10,6 +10,7 @@
  */
 import type { Db } from '../../db/index.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
+import { searchCompanies, type SearchFilter } from '../../search/query.ts';
 import { matchCorporation } from '../site/crawl.ts';
 import { classifyWithLlm, extractWithLlm } from './extract.ts';
 import { emptyUsage, estimateCost, type Llm, type Pricing, type Usage } from './client.ts';
@@ -20,6 +21,14 @@ export const SOURCE_LLM_CLASSIFY = 'llm_classify';
 
 export interface EnrichOptions {
   limit?: number;
+  /**
+   * 補完する範囲を絞る条件。
+   *
+   * 全 34.8 万件にかける必要はまず無い。実際に要るのは、これから接触する
+   * 絞り込みの範囲だけである。東京都の情報サービス業 1 万社なら、
+   * 全件にかけるより 30 分の 1 で済む。
+   */
+  scope?: SearchFilter;
   /** 業種の分類もかける */
   classify?: boolean;
   /** 抽出もかける */
@@ -78,6 +87,16 @@ export async function enrichWithLlm(
 
   // 本文を保存していないので、対象は「収集できたが情報が欠けている」先。
   // 本文は site_name / site_address 等に散っているものを繋いで使う
+  // 範囲が指定されていれば、その条件に合う法人に紐付いた先だけを対象にする
+  let scopeClause = '';
+  const scopeParams: unknown[] = [];
+  if (options.scope) {
+    const inScope = searchCompanies(db, options.scope, { limit: 100_000 }).map((r) => r.corporate_number);
+    if (inScope.length === 0) return result;
+    scopeClause = `AND corporate_number IN (${inScope.map(() => '?').join(', ')})`;
+    scopeParams.push(...inScope);
+  }
+
   const rows = db
     .prepare(
       `SELECT host, site_name, site_address, site_tel, site_email, site_text,
@@ -86,9 +105,10 @@ export async function enrichWithLlm(
         WHERE crawl_status = 'ok'
           AND site_text IS NOT NULL
           AND (site_name IS NULL OR site_address IS NULL OR corporate_number IS NULL)
+          ${scopeClause}
         ORDER BY host LIMIT ?`,
     )
-    .all(limit) as Array<{
+    .all(...scopeParams, limit) as Array<{
     host: string; site_name: string | null; site_address: string | null;
     site_tel: string | null; site_email: string | null; site_text: string; corp: string | null;
   }>;

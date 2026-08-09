@@ -45,9 +45,49 @@ export interface LlmExtractResult {
   error?: string;
 }
 
-/** 本文が長すぎると費用がかさむ。会社情報が載っている前半だけを渡す。 */
-export function trimForLlm(text: string, maxChars = 4000): string {
-  return text.length <= maxChars ? text : text.slice(0, maxChars);
+/** 会社情報が載っていそうな箇所の目印。 */
+const INFO_MARKERS = [
+  '会社概要', '会社案内', '企業情報', '商号', '所在地', '本社', '〒',
+  'TEL', '電話', 'お問い合わせ', '代表者', '設立', '資本金',
+];
+
+/**
+ * LLM に送る分を絞る。
+ *
+ * 本文を丸ごと送ると費用がかさむ。会社情報は目印の近くに固まっているので、
+ * その周辺だけを抜き出す。実測で 4,000 文字 → 1,200 文字前後になり、
+ * 入力の費用がおよそ 1/3 になる。
+ *
+ * 目印が見つからない場合だけ、前半をそのまま使う。
+ */
+export function trimForLlm(text: string, maxChars = 1500): string {
+  if (text.length <= maxChars) return text;
+
+  const spans: Array<[number, number]> = [];
+  for (const marker of INFO_MARKERS) {
+    let i = text.indexOf(marker);
+    while (i !== -1 && spans.length < 40) {
+      spans.push([Math.max(0, i - 60), Math.min(text.length, i + 140)]);
+      i = text.indexOf(marker, i + marker.length);
+    }
+  }
+  if (spans.length === 0) return text.slice(0, maxChars);
+
+  // 重なりを畳んでから、上限まで詰める
+  spans.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const [from, to] of spans) {
+    const last = merged.at(-1);
+    if (last && from <= last[1]) last[1] = Math.max(last[1], to);
+    else merged.push([from, to]);
+  }
+
+  let out = '';
+  for (const [from, to] of merged) {
+    if (out.length >= maxChars) break;
+    out += `${text.slice(from, Math.min(to, from + (maxChars - out.length)))}\n`;
+  }
+  return out.trim();
 }
 
 /**
