@@ -52,6 +52,10 @@ export interface DiscoverOptions {
   fromPage?: number;
   /** 要求の間隔 (ミリ秒)。公開サービスに負荷をかけない */
   delayMs?: number;
+  /** 1 ページあたりのやり直し回数。索引は混雑時に 502/504 を返す */
+  retries?: number;
+  /** やり直しまでの待ち (ミリ秒)。回を追うごとに伸ばす */
+  retryWaitMs?: number;
   onProgress?: (page: number, hostsFound: number, totalHosts: number) => void;
 }
 
@@ -88,6 +92,8 @@ export async function discoverHosts(db: Db, options: DiscoverOptions = {}): Prom
   const suffix = pattern.replace(/^\*\./, '.');
   const pages = options.pages ?? 10;
   const delayMs = options.delayMs ?? 1000;
+  const retries = options.retries ?? 3;
+  const retryWaitMs = options.retryWaitMs ?? 5000;
 
   const done = new Set(
     (
@@ -127,23 +133,35 @@ export async function discoverHosts(db: Db, options: DiscoverOptions = {}): Prom
       continue;
     }
     const url = `${INDEX_BASE}/${collection}-index?url=${encodeURIComponent(pattern)}&output=json&page=${page}`;
-    try {
-      const res = await fetch(url, { headers: { 'user-agent': USER_AGENT } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.text();
-      // 混雑時は本文が HTML のエラーページになる。JSON でなければ失敗として扱う
-      if (!body.startsWith('{')) throw new Error('索引が JSON を返しませんでした (混雑の可能性)');
 
-      const hosts = hostsFromIndexPage(body, suffix);
-      const inserted = writeBatch(hosts, page, new Date().toISOString());
-      hostsInserted += inserted;
-      pagesFetched++;
-      options.onProgress?.(page, hosts.size, hostsInserted);
-    } catch (err) {
+    // 索引は混雑すると 502/504 を返す。実測で半分近くのページが落ちた。
+    // 一時的な不調なので、間を置いて数回やり直せば大半は通る。
+    // (失敗したページは記録に残さないため、次回の実行でも拾い直せる)
+    let lastError = '';
+    let done = false;
+    for (let attempt = 0; attempt < retries && !done; attempt++) {
+      if (attempt > 0) await sleep(retryWaitMs * attempt);
+      try {
+        const res = await fetch(url, { headers: { 'user-agent': USER_AGENT } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.text();
+        // 混雑時は本文が HTML のエラーページになる。JSON でなければ失敗として扱う
+        if (!body.startsWith('{')) throw new Error('索引が JSON を返しませんでした (混雑の可能性)');
+
+        const hosts = hostsFromIndexPage(body, suffix);
+        const inserted = writeBatch(hosts, page, new Date().toISOString());
+        hostsInserted += inserted;
+        pagesFetched++;
+        options.onProgress?.(page, hosts.size, hostsInserted);
+        done = true;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    if (!done) {
       failures++;
-      process.stderr.write(
-        `[発見] ページ ${page} を飛ばします: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+      process.stderr.write(`[発見] ページ ${page} を飛ばします (${retries} 回試行): ${lastError}\n`);
       // 連続して失敗するなら索引側の問題。無限に叩かない
       if (failures >= 5 && pagesFetched === 0) break;
     }
