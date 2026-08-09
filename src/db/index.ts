@@ -21,8 +21,12 @@ export function openDb(path: string = defaultDbPath()): Db {
   const db = new Database(path);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
-  db.exec(readFileSync(join(HERE, 'schema.sql'), 'utf8'));
+  // 列の継ぎ足しは schema.sql より **先** に行う。
+  // schema.sql には新しい列に張る索引が含まれるため、逆順にすると
+  // 既存のデータベースで「no such column」で落ちる (実際に落とした)。
+  // まっさらなデータベースでは表がまだ無いので、この段は素通りする。
   addMissingColumns(db);
+  db.exec(readFileSync(join(HERE, 'schema.sql'), 'utf8'));
   migrateFtsIfStale(db);
   return db;
 }
@@ -39,10 +43,20 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, decl
   ['web_hosts', 'site_text', 'TEXT'],
   ['company_profiles', 'revenue', 'INTEGER'],
   ['company_profiles', 'scale_source', 'TEXT'],
+  ['company_profiles', 'hiring', 'INTEGER'],
+  ['company_profiles', 'hiring_roles', 'TEXT'],
+  ['company_profiles', 'hiring_new_grad', 'INTEGER'],
+  ['company_profiles', 'hiring_mid_career', 'INTEGER'],
+  ['company_profiles', 'hiring_checked_at', 'TEXT'],
 ];
 
 function addMissingColumns(db: Db): void {
+  const tableExists = (name: string): boolean =>
+    (db.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name=?`).get(name) as { n: number })
+      .n > 0;
+
   for (const [table, column, decl] of ADDED_COLUMNS) {
+    if (!tableExists(table)) continue; // まっさらなら schema.sql が作る
     const exists = db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info(?) WHERE name = ?`).get(table, column) as
       | { n: number }
       | undefined;

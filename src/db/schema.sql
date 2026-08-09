@@ -136,6 +136,13 @@ CREATE TABLE IF NOT EXISTS company_profiles (
   contact_email         TEXT,
   contact_tel           TEXT,
 
+  -- 採用の様子。「動いている」印であり、募集職種は当てる部署の手がかりになる
+  hiring                INTEGER,        -- 1 = 募集していると読めた
+  hiring_roles          TEXT,           -- 募集職種 (カンマ区切り)
+  hiring_new_grad       INTEGER,
+  hiring_mid_career     INTEGER,
+  hiring_checked_at     TEXT,
+
   -- 送信前ゲートが参照する判定 (収集時に検出)
   solicitation_refused  INTEGER NOT NULL DEFAULT 0,  -- 1 = 営業お断りの表示を検出
   refused_evidence      TEXT,                        -- 検出した文言と URL
@@ -149,6 +156,7 @@ CREATE INDEX IF NOT EXISTS idx_prof_capital  ON company_profiles(capital);
 CREATE INDEX IF NOT EXISTS idx_prof_emp      ON company_profiles(employees);
 CREATE INDEX IF NOT EXISTS idx_prof_site     ON company_profiles(website_url);
 CREATE INDEX IF NOT EXISTS idx_prof_refused  ON company_profiles(solicitation_refused);
+CREATE INDEX IF NOT EXISTS idx_prof_hiring   ON company_profiles(hiring);
 
 -- ---------------------------------------------------------------------------
 -- 発見したサイト

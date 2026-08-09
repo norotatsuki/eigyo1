@@ -39,6 +39,10 @@ export interface SearchFilter {
   hasWebsite?: boolean;
   /** 問い合わせフォームが判明している先だけに絞る */
   hasContactForm?: boolean;
+  /** 採用しているところだけ。動いている印であり、募集職種は当てる部署の手がかり */
+  hiring?: boolean;
+  /** 募集職種で絞る (施工管理 / 情報システム / 営業 …) */
+  hiringRoles?: string[];
   activeOnly?: boolean;
   excludeRefused?: boolean;
 }
@@ -67,13 +71,15 @@ export interface CompanyRow {
   website_url: string | null;
   contact_form_url: string | null;
   contact_email: string | null;
+  hiring: number | null;
+  hiring_roles: string | null;
 }
 
 const SELECT_COLUMNS = `
   c.corporate_number, c.name, c.corp_form, c.pref_name, c.city_name,
   c.address_full, c.post_code, c.kind, c.assignment_date,
   p.industry_code, p.industry_name, p.capital, p.employees, p.revenue,
-  p.website_url, p.contact_form_url, p.contact_email
+  p.website_url, p.contact_form_url, p.contact_email, p.hiring, p.hiring_roles
 `;
 
 interface BuiltWhere {
@@ -178,7 +184,9 @@ function usesProfile(filter: SearchFilter): boolean {
       filter.revenueMin !== undefined ||
       filter.revenueMax !== undefined ||
       filter.hasWebsite ||
-      filter.hasContactForm,
+      filter.hasContactForm ||
+      filter.hiring ||
+      filter.hiringRoles?.length,
   );
 }
 
@@ -287,6 +295,12 @@ function buildWhere(filter: SearchFilter, forCount = false, indexHint = ''): Bui
   if (filter.assignedTo) {
     clauses.push('c.assignment_date <= ?');
     params.push(filter.assignedTo);
+  }
+  if (filter.hiring) clauses.push('p.hiring = 1');
+  if (filter.hiringRoles?.length) {
+    const ors = filter.hiringRoles.map(() => 'p.hiring_roles LIKE ?').join(' OR ');
+    clauses.push(`(${ors})`);
+    params.push(...filter.hiringRoles.map((r) => `%${r}%`));
   }
   if (filter.hasWebsite) clauses.push("p.website_url IS NOT NULL AND p.website_url <> ''");
   if (filter.hasContactForm) clauses.push("p.contact_form_url IS NOT NULL AND p.contact_form_url <> ''");
@@ -398,7 +412,7 @@ export function* streamCompanies(
 const EXPORT_HEADER = [
   '法人番号', '商号', '法人格', '都道府県', '市区町村', '所在地', '郵便番号',
   '法人種別', '法人番号指定年月日', '業種コード', '業種', '資本金', '従業員数', '売上高',
-  'サイト', '問い合わせフォーム', 'メール',
+  'サイト', '問い合わせフォーム', 'メール', '採用中', '募集職種',
 ];
 
 function csvEscape(v: unknown): string {
@@ -440,6 +454,7 @@ export function* toCsvLines(rows: Iterable<CompanyRow>): Generator<string, void,
       r.address_full, r.post_code, r.kind, r.assignment_date,
       r.industry_code, r.industry_name, r.capital, r.employees, r.revenue,
       r.website_url, r.contact_form_url, r.contact_email,
+      r.hiring === 1 ? '採用中' : '', r.hiring_roles,
     ].map(csvEscape).join(',');
   }
 }

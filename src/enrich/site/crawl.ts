@@ -9,6 +9,7 @@ import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import { extractFromHtml, toText, type Extracted } from './extract.ts';
 import { extractScale } from './scale.ts';
+import { extractRecruit, findRecruitUrl, type Recruit } from './recruit.ts';
 
 /** 会社概要から拾えた規模。1 つも取れなければ出典も残さない。 */
 function scaleOf(text: string): {
@@ -41,6 +42,7 @@ export interface CrawlResult {
   matched: number;
   refusedFound: number;
   contactFound: number;
+  hiringFound: number;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -241,6 +243,7 @@ export function rematchHosts(db: Db): RematchResult {
         n: m.corporateNumber, url: `https://${r.host}`, conf: m.confidence, at: now,
         form: r.contact_url, email: r.site_email, tel: r.site_tel,
         ...scaleOf(r.site_text ?? ''),
+        hiring: null, hiringRoles: null, newGrad: null, midCareer: null, hiringAt: null,
         refused: r.refused_text ? 1 : 0,
         evidence: r.refused_text ? `https://${r.host}: ${r.refused_text}` : null,
       });
@@ -273,13 +276,20 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     `INSERT INTO company_profiles
        (corporate_number, website_url, website_confidence, website_checked_at,
         contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence,
-        capital, employees, revenue, scale_source, updated_at)
+        capital, employees, revenue, scale_source,
+        hiring, hiring_roles, hiring_new_grad, hiring_mid_career, hiring_checked_at, updated_at)
      VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence,
-             @capital, @employees, @revenue, @scaleSource, @at)
+             @capital, @employees, @revenue, @scaleSource,
+             @hiring, @hiringRoles, @newGrad, @midCareer, @hiringAt, @at)
      ON CONFLICT(corporate_number) DO UPDATE SET
        website_url = excluded.website_url,
        website_confidence = excluded.website_confidence,
        website_checked_at = excluded.website_checked_at,
+       hiring = COALESCE(excluded.hiring, company_profiles.hiring),
+       hiring_roles = COALESCE(excluded.hiring_roles, company_profiles.hiring_roles),
+       hiring_new_grad = COALESCE(excluded.hiring_new_grad, company_profiles.hiring_new_grad),
+       hiring_mid_career = COALESCE(excluded.hiring_mid_career, company_profiles.hiring_mid_career),
+       hiring_checked_at = COALESCE(excluded.hiring_checked_at, company_profiles.hiring_checked_at),
        contact_form_url = COALESCE(excluded.contact_form_url, company_profiles.contact_form_url),
        contact_email = COALESCE(excluded.contact_email, company_profiles.contact_email),
        contact_tel = COALESCE(excluded.contact_tel, company_profiles.contact_tel),
@@ -294,6 +304,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
   const result: CrawlResult = {
     visited: 0, ok: 0, failed: 0, disallowed: 0, matched: 0, refusedFound: 0, contactFound: 0,
+    hiringFound: 0,
   };
 
   for (const { host } of hosts) {
@@ -340,6 +351,14 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
       }
     }
 
+    // 採用ページを 1 枚だけ見る。募集職種が「誰に当てるか」の手がかりになる
+    let recruit: Recruit | null = null;
+    const recruitUrl = findRecruitUrl(top.body, `${origin}/`);
+    if (recruitUrl) {
+      const page = await fetchText(recruitUrl);
+      if (page && page.body !== '') recruit = extractRecruit(toText(page.body));
+    }
+
     // 営業お断りの表示は問い合わせページに書かれていることが多い。
     // トップと会社概要だけを見ていたとき、279 サイトで検出 0 件だった。
     // 見落とすと断られている相手に送ることになるので、ここは必ず確かめる。
@@ -377,7 +396,13 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
         refused: info.refusedText ? 1 : 0,
         evidence: info.refusedText ? `${origin}: ${info.refusedText}` : null,
         ...scaleOf(pageText),
+        hiring: recruit ? (recruit.hiring ? 1 : 0) : null,
+        hiringRoles: recruit && recruit.roles.length > 0 ? recruit.roles.join(',') : null,
+        newGrad: recruit ? (recruit.newGrad ? 1 : 0) : null,
+        midCareer: recruit ? (recruit.midCareer ? 1 : 0) : null,
+        hiringAt: recruit ? now : null,
       });
+      if (recruit?.hiring) result.hiringFound++;
     }
 
     options.onProgress?.(result.visited, result.matched);

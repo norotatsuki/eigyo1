@@ -131,6 +131,8 @@ const USAGE = `
     --assigned-from <日付> 法人番号指定年月日の下限 (YYYY-MM-DD)
     --has-website          サイトが判明している先だけ
     --has-form             問い合わせフォームが判明している先だけ
+    --hiring               採用している先だけ (動いている印)
+    --role <職種,…>        募集職種で絞る (施工管理 / 情報システム / 営業 …)
     --include-inactive     閉鎖・除外された法人も含める
     --include-refused      営業お断りの先も含める
     --limit <件数>         表示件数 (search のみ、既定 20)
@@ -180,6 +182,8 @@ const options = {
   'assigned-from': { type: 'string' },
   'has-website': { type: 'boolean' },
   'has-form': { type: 'boolean' },
+  hiring: { type: 'boolean' },
+  role: { type: 'string' },
   'include-inactive': { type: 'boolean' },
   'include-refused': { type: 'boolean' },
   limit: { type: 'string' },
@@ -235,6 +239,9 @@ function toFilter(v: Values, base: SearchFilter | null = null): SearchFilter {
   if (assignedFrom) filter.assignedFrom = assignedFrom;
   if (v['has-website'] === true) filter.hasWebsite = true;
   if (v['has-form'] === true) filter.hasContactForm = true;
+  if (v.hiring === true) filter.hiring = true;
+  const roles = list(v.role);
+  if (roles) filter.hiringRoles = roles;
   return filter;
 }
 
