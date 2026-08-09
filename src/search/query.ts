@@ -451,6 +451,94 @@ export function countCompanies(db: Db, filter: SearchFilter): number {
   return row.n;
 }
 
+/**
+ * いまの条件のまま、指定した切り口ごとの件数を返す。
+ *
+ * 「神奈川県の建設業に絞ったとき、従業員規模はどう散らばっているか」を
+ * 見るためのもの。数を見てから狙いを決められる。
+ *
+ * 切り口ごとに 1 本の GROUP BY で数える。帯ごとに COUNT を投げると
+ * 帯の数だけ全走査が走るため、CASE で 1 回にまとめている。
+ */
+export type Dimension = 'employees' | 'revenue' | 'capital' | 'city' | 'pref' | 'industry';
+
+export interface Slice {
+  id: string;
+  label: string;
+  count: number;
+}
+
+/**
+ * 集計は付加情報の側から駆動する。
+ *
+ * 法人マスタ (500 万行) を先に走査すると、送れる先の集計に 15 秒かかった。
+ * 付加情報は 120 万行で、しかも送れる先には部分索引が張ってある。
+ * 小さい方から辿れば 0.1〜3 秒に収まる (実測 15.5 秒 → 3.2 秒 → 0.1 秒)。
+ */
+const fromProfileFirst = `
+  FROM company_profiles p
+  JOIN corporations c ON c.corporate_number = p.corporate_number`;
+
+export function breakdown(db: Db, filter: SearchFilter, dimension: Dimension): Slice[] {
+  const built = buildWhere(filter, false);
+  // 付加情報を条件に使っているなら、そちらから辿った方が速い。
+  // 使っていない場合 (全法人が対象) は結合を変えると件数が変わってしまう
+  const where = usesProfile(filter)
+    ? { ...built, from: fromProfileFirst }
+    : built;
+
+  // 帯で切るものは、重なる帯 (100名以上 と 300名以上) があるため
+  // CASE では 1 つにしか入らない。帯ごとに数える必要がある
+  const banded: Partial<Record<Dimension, { bands: readonly Band[]; expr: string }>> = {
+    employees: { bands: EMPLOYEE_BANDS, expr: employeesSqlExpr('p') },
+    revenue: { bands: REVENUE_BANDS, expr: revenueSqlExpr('p') },
+    capital: { bands: CAPITAL_BANDS, expr: 'p.capital' },
+  };
+  const b = banded[dimension];
+  if (b) {
+    const columns = b.bands.map((band, i) => {
+      const parts = [`${b.expr} IS NOT NULL`];
+      if (band.min !== null) parts.push(`${b.expr} >= ${band.min}`);
+      if (band.max !== null) parts.push(`${b.expr} < ${band.max}`);
+      return `SUM(CASE WHEN ${parts.join(' AND ')} THEN 1 ELSE 0 END) AS b${i}`;
+    });
+    const row = db
+      .prepare(`SELECT ${columns.join(', ')} ${where.from} ${where.sql}`)
+      .get(...where.params) as Record<string, number>;
+    return b.bands.map((band, i) => ({
+      id: band.id,
+      label: band.label,
+      count: Number(row[`b${i}`] ?? 0),
+    }));
+  }
+
+  /**
+   * 市区町村コードは都道府県ごとに振り直されている。
+   * 「201」は 42 の都道府県に存在するため、コードだけで束ねると
+   * 鳥取市と札幌市中央区が同じ塊になる (実際になった)。必ず県と組で見る。
+   */
+  const group: Record<'city' | 'pref' | 'industry', { key: string; label: string; notNull: string }> = {
+    city: {
+      key: 'c.pref_code || c.city_code',
+      label: 'c.pref_name || c.city_name',
+      notNull: 'c.city_code IS NOT NULL',
+    },
+    pref: { key: 'c.pref_code', label: 'c.pref_name', notNull: 'c.pref_code IS NOT NULL' },
+    industry: { key: 'p.industry_code', label: 'p.industry_name', notNull: 'p.industry_code IS NOT NULL' },
+  };
+  const g = group[dimension as 'city' | 'pref' | 'industry'];
+  // 別名を `id` にしてはいけない。corporations には id 列があり、
+  // HAVING がそちらを見て絞り込みが効かなくなる (実際に効いていなかった)
+  const rows = db
+    .prepare(
+      `SELECT ${g.key} AS slice_id, ${g.label} AS slice_label, COUNT(*) AS n
+       ${where.from} ${where.sql} AND ${g.notNull}
+        GROUP BY ${g.key} ORDER BY n DESC LIMIT 60`,
+    )
+    .all(...where.params) as Array<{ slice_id: string; slice_label: string; n: number }>;
+  return rows.map((r) => ({ id: String(r.slice_id), label: r.slice_label, count: r.n }));
+}
+
 /** 条件に一致する法人を返す。 */
 export function searchCompanies(
   db: Db,

@@ -160,6 +160,11 @@ CREATE INDEX IF NOT EXISTS idx_prof_capital  ON company_profiles(capital);
 CREATE INDEX IF NOT EXISTS idx_prof_emp      ON company_profiles(employees);
 CREATE INDEX IF NOT EXISTS idx_prof_site     ON company_profiles(website_url);
 CREATE INDEX IF NOT EXISTS idx_prof_refused  ON company_profiles(solicitation_refused);
+
+-- 送れる先 (メール または フォームが分かっている) だけを引くための部分索引。
+-- セグメントの集計はここから駆動する。無いと 500 万社を走査して 15 秒かかる
+CREATE INDEX IF NOT EXISTS idx_prof_reachable ON company_profiles(corporate_number)
+  WHERE contact_email IS NOT NULL OR contact_form_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_prof_hiring   ON company_profiles(hiring);
 
 -- ---------------------------------------------------------------------------

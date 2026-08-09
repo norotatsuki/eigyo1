@@ -140,6 +140,30 @@
     background: none; border: 0; color: var(--accent); font-size: 12px; padding: 0; cursor: pointer;
   }
   tr.sources > td { background: #fafaf7; white-space: normal; padding: 10px 14px; }
+
+  /* 数を見てから狙いを決めるための内訳。押すとその条件が絞り込みに入る */
+  .segments {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px;
+    margin-bottom: 14px;
+  }
+  .seg {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 11px 13px;
+  }
+  .seg h3 {
+    margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .04em;
+  }
+  .seg-row {
+    display: flex; align-items: center; gap: 8px; font-size: 12px;
+    padding: 2px 0; cursor: pointer; border: 0; background: none; width: 100%; text-align: left;
+    color: var(--ink); font-family: inherit;
+  }
+  .seg-row:hover .seg-label { color: var(--accent); text-decoration: underline; }
+  .seg-row[aria-pressed="true"] .seg-label { color: var(--accent); font-weight: 600; }
+  .seg-label { flex: 0 0 8.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .seg-bar { flex: 1; height: 6px; background: #f0efe9; border-radius: 3px; overflow: hidden; }
+  .seg-bar > i { display: block; height: 100%; background: var(--accent); }
+  .seg-n { flex: 0 0 4.5em; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .seg-note { font-size: 11px; color: var(--muted); margin-top: 6px; }
   /* 収集は今も動いている。少ない結果を見て「壊れている」と思わせないための帯 */
   .progress {
     background: var(--accent-soft); border-bottom: 1px solid var(--line);
@@ -268,6 +292,8 @@
         <button id="export">CSV に書き出す</button>
       </div>
     </div>
+
+    <div class="segments" id="segments" hidden></div>
 
     <div class="wrap">
       <table>
@@ -514,6 +540,122 @@ function renderRows(rows) {
   tbody.replaceChildren(...rows.flatMap(rowFor));
 }
 
+/**
+ * セグメントの内訳。
+ *
+ * いまの条件のまま、切り口ごとの件数を出す。数を見てから狙いを決められる。
+ * 押すとその条件が絞り込みに入る (帯は左の一覧の印と連動する)。
+ *
+ * 一覧より重いことがあるので、一覧とは別に投げて後から埋める。
+ */
+const SEGMENT_VIEWS = [
+  { dimension: 'employees', title: '従業員数', control: 'employeeBand' },
+  { dimension: 'revenue', title: '年商 (推定含む)', control: 'revenueBand' },
+  { dimension: 'capital', title: '資本金 (実測のみ)', control: 'capitalBand' },
+  { dimension: 'city', title: '市区町村', control: null },
+  { dimension: 'industry', title: '業種', control: null },
+];
+
+let segGeneration = 0;
+
+function segmentPanel(view, slices) {
+  const box = document.createElement('div');
+  box.className = 'seg';
+  const h = document.createElement('h3');
+  h.textContent = view.title;
+  box.append(h);
+
+  const shown = slices.filter((s) => s.count > 0).slice(0, 12);
+  if (shown.length === 0) {
+    box.append(none('該当なし'));
+    return box;
+  }
+  const max = Math.max(...shown.map((s) => s.count));
+  const checkedIds = view.control ? new Set(checkedValues(view.control)) : new Set();
+
+  for (const s of shown) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'seg-row';
+    row.setAttribute('aria-pressed', String(checkedIds.has(s.id)));
+
+    const label = document.createElement('span');
+    label.className = 'seg-label';
+    label.textContent = s.label;
+    label.title = s.label;
+
+    const bar = document.createElement('span');
+    bar.className = 'seg-bar';
+    const fill = document.createElement('i');
+    fill.style.width = Math.max(2, Math.round((s.count / max) * 100)) + '%';
+    bar.append(fill);
+
+    const n = document.createElement('span');
+    n.className = 'seg-n';
+    n.textContent = fmt(s.count);
+
+    row.append(label, bar, n);
+    row.addEventListener('click', () => applySegment(view, s));
+    box.append(row);
+  }
+  return box;
+}
+
+/** 内訳を押したら、その条件を絞り込みに反映する。 */
+function applySegment(view, slice) {
+  if (view.control) {
+    // 帯は左の一覧の印を切り替える。画面の状態を 1 か所に保つため
+    const cb = document.querySelector('#' + view.control + ' input[value="' + slice.id + '"]');
+    if (cb) { cb.checked = !cb.checked; schedule(); return; }
+  }
+  if (view.dimension === 'city') {
+    const cb = document.querySelector('#city input[value="' + slice.id + '"]');
+    if (cb) { cb.checked = !cb.checked; schedule(); return; }
+    // 都道府県を絞っていないと市区町村の一覧が出ていない。その場合は語で絞る
+    $('keyword').value = '';
+  }
+  if (view.dimension === 'industry') {
+    const cb = document.querySelector('#industry input[value="' + slice.id + '"]');
+    if (cb) { cb.checked = !cb.checked; schedule(); return; }
+  }
+}
+
+async function refreshSegments(params) {
+  const mine = ++segGeneration;
+  const box = $('segments');
+  box.hidden = false;
+  box.replaceChildren(...SEGMENT_VIEWS.map((v) => {
+    const p = document.createElement('div');
+    p.className = 'seg';
+    const h = document.createElement('h3');
+    h.textContent = v.title;
+    p.append(h, none('集計中…'));
+    return p;
+  }));
+
+  // 切り口ごとに別々に投げ、届いた順に差し替える。1 つ遅くても他を待たせない
+  SEGMENT_VIEWS.forEach((view, i) => {
+    const q = new URLSearchParams(params);
+    q.set('dimension', view.dimension);
+    fetch('/api/breakdown?' + q)
+      .then((r) => r.json())
+      .then((data) => {
+        if (mine !== segGeneration) return;
+        const panel = segmentPanel(view, data.slices || []);
+        box.children[i]?.replaceWith(panel);
+      })
+      .catch(() => {
+        if (mine !== segGeneration) return;
+        const p = document.createElement('div');
+        p.className = 'seg';
+        const h = document.createElement('h3');
+        h.textContent = view.title;
+        p.append(h, none('集計できませんでした'));
+        box.children[i]?.replaceWith(p);
+      });
+  });
+}
+
 // 件数の集計は数秒かかることがある。一覧を待たせないよう別々に投げ、
 // 後から届いた方が古い条件のものなら捨てる。
 let generation = 0;
@@ -538,6 +680,8 @@ async function run() {
       ? fmt(offset + 1) + '–' + fmt(offset + data.rows.length) + ' 件目'
       : '';
   });
+
+  void refreshSegments(p);
 
   fetch('/api/count?' + p).then((r) => r.json()).then((data) => {
     if (mine !== generation) return;

@@ -14,6 +14,7 @@ import { loadMeta, type Meta } from '../search/meta.ts';
 import { CAPITAL_BANDS, EMPLOYEE_BANDS, REVENUE_BANDS } from '../search/bands.ts';
 import { scaleWithEstimates } from '../enrich/estimate.ts';
 import {
+  breakdown,
   countCompanies,
   searchCompanies,
   streamCompanies,
@@ -174,6 +175,25 @@ function handle(db: Db, meta: Meta, req: IncomingMessage, res: ServerResponse): 
       // 実測か推定かは必ず区別して返す (画面と CSV でそのまま出す)
       .map((r) => ({ ...r, scale: scaleWithEstimates(r.capital, r.employees, r.revenue) }));
     sendJson(res, 200, { rows, offset, limit, elapsedMs: Date.now() - started });
+    return;
+  }
+
+  /**
+   * いまの条件のまま、切り口ごとの件数を返す。
+   *
+   * 数を見てから狙いを決められるようにするためのもの。
+   * 一覧より重いことがあるので、画面側は別々に投げて後から埋める。
+   */
+  if (url.pathname === '/api/breakdown') {
+    const dimension = q.get('dimension') ?? 'employees';
+    const allowed = ['employees', 'revenue', 'capital', 'city', 'pref', 'industry'] as const;
+    if (!(allowed as readonly string[]).includes(dimension)) {
+      sendJson(res, 400, { error: `知らない切り口: ${dimension}` });
+      return;
+    }
+    const started = Date.now();
+    const slices = breakdown(db, filterFromParams(q), dimension as (typeof allowed)[number]);
+    sendJson(res, 200, { dimension, slices, elapsedMs: Date.now() - started });
     return;
   }
 
