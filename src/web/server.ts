@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { Db } from '../db/index.ts';
 import { loadMeta, type Meta } from '../search/meta.ts';
+import { CAPITAL_BANDS, EMPLOYEE_BANDS, REVENUE_BANDS } from '../search/bands.ts';
 import { scaleWithEstimates } from '../enrich/estimate.ts';
 import {
   countCompanies,
@@ -71,6 +72,12 @@ export function filterFromParams(q: URLSearchParams): SearchFilter {
   if (q.get('hasEmail') === '1') filter.hasEmail = true;
   if (q.get('reachable') === '1') filter.reachable = true;
   if (q.get('hasRepresentative') === '1') filter.hasRepresentative = true;
+  const employeeBands = list('employeeBand');
+  if (employeeBands) filter.employeeBands = employeeBands;
+  const capitalBands = list('capitalBand');
+  if (capitalBands) filter.capitalBands = capitalBands;
+  const revenueBands = list('revenueBand');
+  if (revenueBands) filter.revenueBands = revenueBands;
   return filter;
 }
 
@@ -81,6 +88,45 @@ function optionsFromParams(q: URLSearchParams): SearchOptions {
     opts.orderBy = order;
   }
   return opts;
+}
+
+/**
+ * 政令指定都市を「市まるごと」でも選べるようにする。
+ *
+ * 国税庁のデータは区の単位で持っている (横浜市は 18 区に分かれる)。
+ * 「横浜市で探したい」のが普通なので、区を束ねた見出しを足す。
+ * 値は区のコードをまとめたもので、区ごとに選ぶことも引き続きできる。
+ */
+export function withWholeCities(
+  cities: ReadonlyArray<{ code: string; label: string; count: number }>,
+): Array<{ code: string; label: string; count: number }> {
+  const wards = new Map<string, Array<{ code: string; label: string; count: number }>>();
+  for (const c of cities) {
+    const m = c.label.match(/^(.+?市)(.+区)$/);
+    if (!m?.[1]) continue;
+    const list = wards.get(m[1]) ?? [];
+    list.push(c);
+    wards.set(m[1], list);
+  }
+
+  const out: Array<{ code: string; label: string; count: number }> = [];
+  const emitted = new Set<string>();
+  for (const c of cities) {
+    const m = c.label.match(/^(.+?市)(.+区)$/);
+    const parent = m?.[1];
+    // 区が 2 つ以上あるときだけ束ねる (1 つなら束ねる意味がない)
+    if (parent && (wards.get(parent)?.length ?? 0) > 1 && !emitted.has(parent)) {
+      emitted.add(parent);
+      const group = wards.get(parent)!;
+      out.push({
+        code: group.map((w) => w.code).join(','),
+        label: `${parent} (全${group.length}区)`,
+        count: group.reduce((n, w) => n + w.count, 0),
+      });
+    }
+    out.push(c);
+  }
+  return out;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -103,13 +149,17 @@ function handle(db: Db, meta: Meta, req: IncomingMessage, res: ServerResponse): 
   }
 
   if (url.pathname === '/api/meta') {
-    sendJson(res, 200, meta);
+    // 帯の選択肢も一緒に返す。画面と絞り込みで定義がずれないようにするため
+    sendJson(res, 200, {
+      ...meta,
+      bands: { employees: EMPLOYEE_BANDS, capital: CAPITAL_BANDS, revenue: REVENUE_BANDS },
+    });
     return;
   }
 
   if (url.pathname === '/api/cities') {
     const pref = q.get('pref');
-    sendJson(res, 200, (pref && meta.cities[pref]) || []);
+    sendJson(res, 200, withWholeCities((pref && meta.cities[pref]) || []));
     return;
   }
 

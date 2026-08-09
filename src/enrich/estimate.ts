@@ -121,6 +121,26 @@ export function scaleWithEstimates(
   return { employees: emp, revenue: rev };
 }
 
+/**
+ * 実測値が無い先も含めて絞り込めるよう、推定を含む式を SQL 用に組み立てる。
+ *
+ * 画面に出す推定と、絞り込みに使う推定が食い違ってはいけない。
+ * どちらも上の定数から作ることで、ずれようがない形にしている。
+ */
+export function employeesSqlExpr(profile = 'p'): string {
+  const bands = EMPLOYEES_BY_CAPITAL.map(([max, employees]) =>
+    Number.isFinite(max)
+      ? `WHEN ${profile}.capital < ${max} THEN ${employees}`
+      : `ELSE ${employees}`,
+  ).join(' ');
+  return `COALESCE(${profile}.employees,
+    CASE WHEN ${profile}.capital IS NULL OR ${profile}.capital <= 0 THEN NULL ${bands} END)`;
+}
+
+export function revenueSqlExpr(profile = 'p'): string {
+  return `COALESCE(${profile}.revenue, (${employeesSqlExpr(profile)}) * ${REVENUE_PER_EMPLOYEE})`;
+}
+
 /** 金額を日本語の単位で短く書く。 */
 export function formatYen(yen: number): string {
   if (yen >= 100_000_000) {

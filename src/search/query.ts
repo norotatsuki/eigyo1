@@ -9,6 +9,9 @@
  *   excludeRefused … 営業お断りを検出した先を落とす
  */
 import type { Db } from '../db/index.ts';
+import { employeesSqlExpr, revenueSqlExpr, scaleWithEstimates } from '../enrich/estimate.ts';
+import { CAPITAL_BANDS, EMPLOYEE_BANDS, REVENUE_BANDS, findBand, type Band } from './bands.ts';
+import { emptySocialLinks, normalizeSocialLinks } from '../enrich/site/extract.ts';
 
 export interface SearchFilter {
   /** 商号の部分一致。3 文字以上は全文検索、2 文字以下は前方後方一致で照合する */
@@ -51,6 +54,15 @@ export interface SearchFilter {
   reachable?: boolean;
   /** 代表者名が判明している先だけに絞る */
   hasRepresentative?: boolean;
+  /**
+   * 規模の帯で絞る。複数選べる (選んだ帯のどれかに当たれば対象)。
+   *
+   * 従業員数と年商は書いていない会社が多いため、**推定を含めて**判定する。
+   * 使う推定は画面に出すものと同じ (src/enrich/estimate.ts の定数から作る)。
+   */
+  employeeBands?: string[];
+  capitalBands?: string[];
+  revenueBands?: string[];
   /** 採用しているところだけ。動いている印であり、募集職種は当てる部署の手がかり */
   hiring?: boolean;
   /** 募集職種で絞る (施工管理 / 情報システム / 営業 …) */
@@ -208,6 +220,9 @@ function usesProfile(filter: SearchFilter): boolean {
       filter.hasEmail ||
       filter.reachable ||
       filter.hasRepresentative ||
+      (filter.employeeBands?.length ?? 0) > 0 ||
+      (filter.capitalBands?.length ?? 0) > 0 ||
+      (filter.revenueBands?.length ?? 0) > 0 ||
       filter.hiring ||
       filter.hiringRoles?.length,
   );
@@ -336,6 +351,24 @@ function buildWhere(filter: SearchFilter, forCount = false, indexHint = ''): Bui
   }
   if (filter.hasRepresentative) clauses.push("p.representative IS NOT NULL AND p.representative <> ''");
 
+  // 帯は「どれかに当たれば対象」。1 つの括弧にまとめて OR でつなぐ
+  const bandClause = (bands: readonly string[] | undefined, expr: string, table: readonly Band[]): void => {
+    if (!bands || bands.length === 0) return;
+    const parts: string[] = [];
+    for (const id of bands) {
+      const band = findBand(table, id);
+      if (!band) continue;
+      const conds = [`${expr} IS NOT NULL`];
+      if (band.min !== null) conds.push(`${expr} >= ${band.min}`);
+      if (band.max !== null) conds.push(`${expr} < ${band.max}`);
+      parts.push(`(${conds.join(' AND ')})`);
+    }
+    if (parts.length > 0) clauses.push(`(${parts.join(' OR ')})`);
+  };
+  bandClause(filter.employeeBands, employeesSqlExpr('p'), EMPLOYEE_BANDS);
+  bandClause(filter.capitalBands, 'p.capital', CAPITAL_BANDS);
+  bandClause(filter.revenueBands, revenueSqlExpr('p'), REVENUE_BANDS);
+
   return {
     from,
     sql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
@@ -440,10 +473,24 @@ export function* streamCompanies(
   yield* db.prepare(built.sql).iterate(...built.params) as IterableIterator<CompanyRow>;
 }
 
+/**
+ * 書き出す列。
+ *
+ * 表計算ソフトに貼って、そのまま営業リストとして使える並びにする。
+ * 推定値には「(実測/推定)」の列を隣に置く。事実と推定を同じ列に混ぜると、
+ * 受け取った人が区別できない。
+ *
+ * 法人番号は画面には出していないが、ここには残す。
+ * 重複を防ぐ鍵であり、他の名簿と突き合わせるときの唯一の目印になる。
+ */
 const EXPORT_HEADER = [
-  '法人番号', '商号', '法人格', '都道府県', '市区町村', '所在地', '郵便番号',
-  '法人種別', '法人番号指定年月日', '業種コード', '業種', '資本金', '従業員数', '売上高',
-  'サイト', '問い合わせフォーム', 'メール', '採用中', '募集職種',
+  '企業名', 'メールアドレス', '代表者名', '電話番号',
+  '従業員数', '従業員数の別', '年商', '年商の別',
+  '公式HP', '問い合わせフォームURL', '業種', '事業内容',
+  '住所', '郵便番号', '都道府県', '市区町村', '資本金',
+  '代表者LinkedIn', '代表者Facebook', '代表者Instagram',
+  '会社LinkedIn', '会社Facebook', '会社Instagram', '会社X',
+  '採用中', '募集職種', '法人格', '法人番号', '出典',
 ];
 
 function csvEscape(v: unknown): string {
@@ -476,16 +523,35 @@ export function* toLabelCsvLines(
   }
 }
 
+/** SNS は 1 つの升目に収める。複数あるときは改行で並べる (表計算ソフトで読める形) */
+function joinUrls(urls: readonly string[]): string {
+  return urls.join('\n');
+}
+
 /** 表計算ソフトで開ける形に整えて 1 行ずつ返す。 */
 export function* toCsvLines(rows: Iterable<CompanyRow>): Generator<string, void, void> {
   yield EXPORT_HEADER.join(',');
   for (const r of rows) {
+    const scale = scaleWithEstimates(r.capital, r.employees, r.revenue);
+    let sns = emptySocialLinks();
+    if (r.social_links) {
+      try {
+        sns = normalizeSocialLinks(JSON.parse(r.social_links));
+      } catch {
+        // 壊れていたら空欄。書き出しを止める理由にはならない
+      }
+    }
     yield [
-      r.corporate_number, r.name, r.corp_form, r.pref_name, r.city_name,
-      r.address_full, r.post_code, r.kind, r.assignment_date,
-      r.industry_code, r.industry_name, r.capital, r.employees, r.revenue,
-      r.website_url, r.contact_form_url, r.contact_email,
-      r.hiring === 1 ? '採用中' : '', r.hiring_roles,
+      r.name, r.contact_email, r.representative, r.contact_tel,
+      scale.employees?.value ?? '', scale.employees ? (scale.employees.estimated ? '推定' : '実測') : '',
+      scale.revenue?.value ?? '', scale.revenue ? (scale.revenue.estimated ? '推定' : '実測') : '',
+      r.website_url, r.contact_form_url, r.industry_name, r.business_evidence,
+      r.address_full, r.post_code, r.pref_name, r.city_name, r.capital,
+      joinUrls(sns.representativeLinkedin), joinUrls(sns.representativeFacebook),
+      joinUrls(sns.representativeInstagram),
+      joinUrls(sns.linkedin), joinUrls(sns.facebook), joinUrls(sns.instagram), joinUrls(sns.x),
+      r.hiring === 1 ? '採用中' : '', r.hiring_roles, r.corp_form, r.corporate_number,
+      r.field_sources ?? '',
     ].map(csvEscape).join(',');
   }
 }

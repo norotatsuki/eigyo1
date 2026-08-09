@@ -58,6 +58,14 @@ const MAX_PAGES_PER_SITE = 6;
 
 export interface CrawlOptions {
   limit?: number;
+  /**
+   * 送れる先がこの数に達したら止める。
+   *
+   * 「必要な件数を集めること」より「集めたものが条件を満たしていること」を
+   * 優先する方針なので、数だけを目的に条件を緩めることはしない。
+   * ここで数えるのは **条件を満たした先** の数である。
+   */
+  target?: number;
   /** 1 サイトごとの間隔 (ミリ秒)。同時実行するので 1 本あたりの間隔 */
   delayMs?: number;
   /** 同時に当たる相手の数。相手は全て別のサイトなので、1 社への負荷は増えない */
@@ -159,6 +167,10 @@ function satisfied(acc: Accumulator): boolean {
 
 export interface CrawlResult {
   visited: number;
+  /** 条件を満たした先の数 (目標件数を指定したときだけ数える) */
+  qualified: number;
+  /** 目標件数に達して止めたか */
+  stoppedAtTarget: boolean;
   ok: number;
   failed: number;
   disallowed: number;
@@ -628,7 +640,8 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     `UPDATE web_hosts SET crawl_status = ?, crawled_at = ?, http_status = ?, error = ?,
        site_name = ?, site_address = ?, site_tel = ?, site_email = ?, contact_url = ?, refused_text = ?,
        site_text = ?, site_representative = ?, field_sources = ?, social_links = ?,
-       corporate_number = ?, match_confidence = ?, match_method = ?
+       corporate_number = ?, match_confidence = ?, match_method = ?,
+       attempts = attempts + 1
      WHERE host = ?`,
   );
   const upsertProfile = db.prepare(
@@ -669,8 +682,26 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
   const result: CrawlResult = {
     visited: 0, ok: 0, failed: 0, disallowed: 0, matched: 0, refusedFound: 0, contactFound: 0,
-    hiringFound: 0,
+    hiringFound: 0, qualified: 0, stoppedAtTarget: false,
   };
+
+  /** 送れる先 (メール または フォームが分かっている法人) の数。 */
+  const countQualified = (): number =>
+    (db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM company_profiles
+          WHERE (contact_email IS NOT NULL AND contact_email <> '')
+             OR (contact_form_url IS NOT NULL AND contact_form_url <> '')`,
+      )
+      .get() as { n: number }).n;
+
+  if (options.target !== undefined) {
+    result.qualified = countQualified();
+    if (result.qualified >= options.target) {
+      result.stoppedAtTarget = true;
+      return result;
+    }
+  }
 
   /**
    * 1 サイト分を集める。ここは通信だけで、データベースには触らない。
@@ -813,14 +844,25 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
       if (recruit?.hiring) result.hiringFound++;
     }
 
+    // 目標件数の確認は 200 件ごと。毎回数えると 120 万行の集計が入って遅くなる
+    if (options.target !== undefined && result.visited % 200 === 0) {
+      result.qualified = countQualified();
+      if (result.qualified >= options.target) {
+        result.stoppedAtTarget = true;
+        reachedTarget = true;
+      }
+    }
+
     options.onProgress?.(result.visited, result.matched);
   };
 
   // 別々の相手に同時に当たる。34.8 万件を 1 件ずつ回すと 190 時間かかる
   const queue = hosts.map((h) => h.host);
   let next = 0;
+  let reachedTarget = false;
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (reachedTarget) return;
       const i = next++;
       if (i >= queue.length) return;
       const host = queue[i]!;

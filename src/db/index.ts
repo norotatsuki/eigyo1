@@ -55,6 +55,7 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, decl
   ['company_profiles', 'business_evidence', 'TEXT'],
   ['web_hosts', 'social_links', 'TEXT'],
   ['company_profiles', 'social_links', 'TEXT'],
+  ['web_hosts', 'attempts', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
 function addMissingColumns(db: Db): void {

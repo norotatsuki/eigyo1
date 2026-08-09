@@ -98,6 +98,8 @@ const USAGE = `
     --limit <数>           訪ねる件数 (既定 50)
     --delay <ミリ秒>       1 本あたりの間隔 (既定 300)
     --concurrency <数>     同時に当たる相手の数 (既定 6)。相手は全て別のサイト
+    --target <数>          送れる先がこの数に達したら止める
+                           (数のために条件を緩めることはしない)
 
   init-config 送信の設定ファイルのひな形を作る
     --preset gmail|workspace   Gmail / Google Workspace の SMTP を埋めた形で作る
@@ -156,6 +158,9 @@ const USAGE = `
     --assigned-from <日付> 法人番号指定年月日の下限 (YYYY-MM-DD)
     --has-website          サイトが判明している先だけ
     --has-form             問い合わせフォームが判明している先だけ
+    --has-email            公開メールが判明している先だけ
+    --reachable            送れる先だけ (メール または フォーム)
+    --has-representative   代表者名が判明している先だけ
     --hiring               採用している先だけ (動いている印)
     --role <職種,…>        募集職種で絞る (施工管理 / 情報システム / 営業 …)
     --include-inactive     閉鎖・除外された法人も含める
@@ -216,6 +221,10 @@ const options = {
   'assigned-from': { type: 'string' },
   'has-website': { type: 'boolean' },
   'has-form': { type: 'boolean' },
+  'has-email': { type: 'boolean' },
+  reachable: { type: 'boolean' },
+  target: { type: 'string' },
+  'has-representative': { type: 'boolean' },
   hiring: { type: 'boolean' },
   role: { type: 'string' },
   'include-inactive': { type: 'boolean' },
@@ -275,6 +284,9 @@ function toFilter(v: Values, base: SearchFilter | null = null): SearchFilter {
   if (assignedFrom) filter.assignedFrom = assignedFrom;
   if (v['has-website'] === true) filter.hasWebsite = true;
   if (v['has-form'] === true) filter.hasContactForm = true;
+  if (v['has-email'] === true) filter.hasEmail = true;
+  if (v['reachable'] === true) filter.reachable = true;
+  if (v['has-representative'] === true) filter.hasRepresentative = true;
   if (v.hiring === true) filter.hiring = true;
   const roles = list(v.role);
   if (roles) filter.hiringRoles = roles;
@@ -604,14 +616,18 @@ async function cmdCrawl(db: Db, v: Values): Promise<void> {
   console.error(`[収集] 未訪問 ${fmt(pending.n)} 件のうち ${fmt(limit)} 件を訪ねます (同時 ${concurrency} / 間隔 ${delayMs}ms)`);
 
   const started = Date.now();
+  const target = num(v.target);
+  if (target !== undefined) console.error(`[収集] 送れる先が ${fmt(target)} 件に達したら止めます`);
+
   const r = await crawlPendingHosts(db, {
-    limit, delayMs, concurrency,
+    limit, delayMs, concurrency, ...(target !== undefined ? { target } : {}),
     onProgress: (done, matched) => {
       if (done % 10 === 0) console.error(`[収集] ${fmt(done)} 件 / 紐付き ${fmt(matched)} 件`);
     },
   });
   const sec = ((Date.now() - started) / 1000).toFixed(0);
   console.log(`訪問 ${fmt(r.visited)} 件 — ${sec} 秒`);
+  if (r.stoppedAtTarget) console.log(`  目標に到達したので止めました (送れる先 ${fmt(r.qualified)} 件)`);
   console.log(`  取得できた          ${fmt(r.ok).padStart(6)}`);
   console.log(`  接続できなかった    ${fmt(r.failed).padStart(6)}`);
   console.log(`  robots.txt で不可   ${fmt(r.disallowed).padStart(6)}`);

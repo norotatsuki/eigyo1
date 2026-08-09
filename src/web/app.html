@@ -218,6 +218,23 @@
     </fieldset>
 
     <fieldset>
+      <span class="lbl">従業員数</span>
+      <div class="scroll-list" id="employeeBand" style="max-height:none"></div>
+    </fieldset>
+
+    <fieldset>
+      <span class="lbl">年商</span>
+      <div class="scroll-list" id="revenueBand" style="max-height:none"></div>
+      <div class="note">書いていない会社は推定で判定します (資本金 → 従業員数 → 年商)。</div>
+    </fieldset>
+
+    <fieldset>
+      <span class="lbl">資本金</span>
+      <div class="scroll-list" id="capitalBand" style="max-height:none"></div>
+      <div class="note">会社概要に書かれていた実測値だけが対象です。</div>
+    </fieldset>
+
+    <fieldset>
       <span class="lbl">接触経路</span>
       <label class="check"><input type="checkbox" id="reachable"> <b>送れる先だけ</b> (メール または フォーム)</label>
       <label class="check"><input type="checkbox" id="hasEmail"> メールが判明している先だけ</label>
@@ -296,6 +313,9 @@ function buildParams() {
   for (const v of checkedValues('pref')) p.append('pref', v);
   for (const v of checkedValues('city')) p.append('city', v);
   for (const v of checkedValues('kind')) p.append('kind', v);
+  for (const v of checkedValues('employeeBand')) p.append('employeeBand', v);
+  for (const v of checkedValues('capitalBand')) p.append('capitalBand', v);
+  for (const v of checkedValues('revenueBand')) p.append('revenueBand', v);
   const conf = $('industryConfidence').value;
   if (conf) p.set('industryConfidence', conf);
   if ($('assignedFrom').value) p.set('assignedFrom', $('assignedFrom').value);
@@ -558,6 +578,22 @@ async function refreshCities() {
   $('cityNote').textContent = cities.length + ' 市区町村';
 }
 
+/** 帯の選択肢を並べる。件数は条件次第で変わるので出さない。 */
+function fillBands(containerId, bands) {
+  const box = $(containerId);
+  box.replaceChildren(...bands.map((b) => {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = b.id;
+    cb.addEventListener('change', schedule);
+    const text = document.createElement('span');
+    text.textContent = b.label;
+    label.append(cb, text);
+    return label;
+  }));
+}
+
 function fillList(containerId, items, valueKey) {
   const box = $(containerId);
   box.replaceChildren(...items.map((it) => {
@@ -652,6 +688,10 @@ async function boot() {
   fillIndustries(meta.industries);
   fillList('pref', meta.prefectures, 'code');
   fillList('kind', meta.kinds, 'code');
+  // 帯の選択肢は取得元 (/api/meta) から受け取る。画面側に写しを持つと定義がずれる
+  fillBands('employeeBand', meta.bands.employees);
+  fillBands('capitalBand', meta.bands.capital);
+  fillBands('revenueBand', meta.bands.revenue);
   // 都道府県を変えたら市区町村を出し直す
   $('pref').addEventListener('change', () => { void refreshCities(); });
 

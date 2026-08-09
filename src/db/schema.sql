@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS web_hosts (
   site_representative TEXT,              -- 代表者名 (サイトに書かれていた形のまま)
   field_sources   TEXT,                  -- 項目ごとの取得元 URL (JSON)
   social_links    TEXT,                  -- SNS のリンク (JSON)。会社のものと代表者のものを分けて持つ
+  attempts        INTEGER NOT NULL DEFAULT 0,  -- 訪ねた回数。死んだドメインを何度も叩かないため
   refused_text    TEXT,                  -- 営業お断りの文言 (見つかった場合)
   -- 本文の先頭 (LLM に読ませるため)。訪ね直さずに読み直せるようにする。
   -- 1 件 4KB 前後。34.8 万件で 1.4GB ほどになる見込み
