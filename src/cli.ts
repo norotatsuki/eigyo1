@@ -15,7 +15,7 @@ import { PREFECTURES, type Region } from './ingest/nta/catalog.ts';
 import { COMPANY_KINDS, CORP_KIND_LABEL } from './ingest/nta/record.ts';
 import { classifyAll } from './enrich/industry/classify.ts';
 import { discoverHosts, fetchPageCount, DEFAULT_COLLECTION, DEFAULT_PATTERN } from './ingest/commoncrawl/hosts.ts';
-import { crawlPendingHosts, rematchHosts } from './enrich/site/crawl.ts';
+import { crawlPendingHosts, rematchHosts, scrubContactUrls } from './enrich/site/crawl.ts';
 import { createLlm, estimateCost, roughTokens, DEFAULT_LLM } from './enrich/llm/client.ts';
 import { enrichWithLlm } from './enrich/llm/enrich.ts';
 import { GbizClient, type GbizSearch } from './ingest/gbizinfo/client.ts';
@@ -60,6 +60,7 @@ const USAGE = `
     --collection <版>      索引の版 (既定 CC-MAIN-2025-05)
 
   rematch  収集済みのデータだけで突き合わせをやり直す (サイトは訪ねない)
+  scrub    送ってはいけない問い合わせ先 (SNS・採用窓口など) を宛先から外す
 
   gbiz     gBizINFO (経済産業省) から取り込む
     --search               条件を gBizINFO に投げて、当てはまる法人を取り込む
@@ -529,6 +530,15 @@ function cmdRematch(db: Db): void {
   }
 }
 
+function cmdScrub(db: Db): void {
+  console.error('[点検] 集めてある問い合わせ先を見直します');
+  const r = scrubContactUrls(db);
+  console.log(`点検 ${fmt(r.scanned)} 件 / 宛先から外した ${fmt(r.removed)} 件`);
+  for (const [reason, n] of Object.entries(r.byReason).sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${reason.padEnd(10, '　')} ${fmt(n).padStart(6)}`);
+  }
+}
+
 async function cmdCrawl(db: Db, v: Values): Promise<void> {
   const limit = num(v.limit) ?? 50;
   const delayMs = num(v.delay) ?? 300;
@@ -873,6 +883,9 @@ async function main(): Promise<void> {
         break;
       case 'discover':
         await cmdDiscover(db, v);
+        break;
+      case 'scrub':
+        cmdScrub(db);
         break;
       case 'rematch':
         cmdRematch(db);

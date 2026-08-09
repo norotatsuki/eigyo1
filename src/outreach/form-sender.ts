@@ -8,6 +8,7 @@
  * 業務妨害の領域に入る。回避策を実装してはいけない。
  */
 import { chromium, type Browser, type Page } from '@playwright/test';
+import { contactUrlRejectReason } from '../enrich/site/extract.ts';
 import type { FormConfig } from './config.ts';
 
 /** 欄の意味。見出しや属性から推し量る。 */
@@ -237,6 +238,15 @@ export async function sendToForm(
   options: SendFormOptions = {},
 ): Promise<{ outcome: SendOutcome; analysis: FormAnalysis | null }> {
   const timeout = options.timeoutMs ?? 30_000;
+
+  // 送る直前に、その宛先が営業に使ってよいものか最後にもう一度見る。
+  // 集める側でも弾いているが、古いデータや手で入れた値がここに来ることがある。
+  // 採用の窓口や SNS に営業文を投げるのは、取り返しがつかない
+  const rejected = contactUrlRejectReason(url);
+  if (rejected) {
+    return { outcome: { status: 'skipped', reason: `営業の宛先に使えません (${rejected}): ${url}` }, analysis: null };
+  }
+
   const context = await browser.newContext({ locale: 'ja-JP' });
   const page = await context.newPage();
   try {

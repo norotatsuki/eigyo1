@@ -7,7 +7,7 @@
 import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
-import { extractFromHtml, toText, type Extracted } from './extract.ts';
+import { contactUrlRejectReason, extractFromHtml, toText, type Extracted } from './extract.ts';
 import { extractScale } from './scale.ts';
 import { extractRecruit, findRecruitUrl, type Recruit } from './recruit.ts';
 
@@ -196,6 +196,47 @@ export interface RematchResult {
   matched: number;
   changed: number;
   byMethod: Record<string, number>;
+}
+
+export interface ScrubResult {
+  scanned: number;
+  removed: number;
+  /** 除外の理由 → 件数 */
+  byReason: Record<string, number>;
+}
+
+/**
+ * 既に集めてある問い合わせ先から、送ってはいけない行き先を落とす。
+ *
+ * 判定の仕方を直しても、直す前に集めた分はそのまま残っている。
+ * 集め直すのは相手にも時間にも無駄なので、手元の値を見直すだけで済ませる。
+ *
+ * 落とすのは「宛先」だけで、収集した本文や紐付けはそのまま残す
+ * (メールや電話が別にあれば、その先には送れるため)。
+ */
+export function scrubContactUrls(db: Db): ScrubResult {
+  const rows = db
+    .prepare('SELECT host, corporate_number AS n, contact_url AS url FROM web_hosts WHERE contact_url IS NOT NULL')
+    .all() as Array<{ host: string; n: string | null; url: string }>;
+
+  const clearHost = db.prepare('UPDATE web_hosts SET contact_url = NULL WHERE host = ?');
+  const clearProfile = db.prepare(
+    'UPDATE company_profiles SET contact_form_url = NULL WHERE corporate_number = ? AND contact_form_url = ?',
+  );
+
+  const result: ScrubResult = { scanned: rows.length, removed: 0, byReason: {} };
+  db.transaction(() => {
+    for (const r of rows) {
+      const reason = contactUrlRejectReason(r.url);
+      if (!reason) continue;
+      clearHost.run(r.host);
+      if (r.n) clearProfile.run(r.n, r.url);
+      result.removed++;
+      result.byReason[reason] = (result.byReason[reason] ?? 0) + 1;
+    }
+  })();
+
+  return result;
 }
 
 /**

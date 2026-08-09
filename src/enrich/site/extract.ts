@@ -182,6 +182,74 @@ const ADDRESS_RE =
 /** 問い合わせページらしいリンク。 */
 const CONTACT_HINTS = ['contact', 'inquiry', 'toiawase', 'otoiawase', 'form', 'お問い合わせ', 'お問合せ', '問い合わせ'];
 
+/** 営業の宛先にしてはいけない外部サービス。 */
+const SNS_HOSTS = ['facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'line.me', 'youtube.com', 'tiktok.com'];
+
+/** 資料や画像。フォームではない。 */
+const FILE_EXT = /\.(pdf|jpe?g|png|gif|zip|xlsx?|docx?)$/i;
+
+/** 問い合わせではない案内ページ。 */
+const OTHER_PAGE = /(privacy|policy|sitemap|login|mypage|faq)/i;
+
+/** 採用の窓口を指す語。ホスト名の下位部分と経路のどちらかに出たら採用向けとみなす。 */
+const RECRUIT_WORDS = ['recruit', 'saiyo', 'jinji', 'career', '採用', '求人'];
+
+/** entry 単体は曖昧なので、応募用紙とわかる形だけを採用向けとみなす。 */
+const ENTRY_FORM = /entry[-_]?form|new[-_]?entry/i;
+
+/**
+ * 登録できる範囲のドメインを返す。それより左が下位部分 (subdomain)。
+ *
+ * `recruit.example.co.jp` の recruit は採用専用サイトの印だが、
+ * `alta-career.co.jp` の career は社名の一部にすぎない。
+ * この 2 つを区別するために、どこまでが会社の名前かを見る。
+ */
+function splitHost(host: string): { sub: string; registrable: string } {
+  const labels = host.toLowerCase().replace(/^www\./, '').split('.');
+  // co.jp / or.jp / ne.jp などは 3 つで 1 社分、それ以外は 2 つで 1 社分
+  const depth = labels.length >= 3 && /^(co|or|ne|ac|go|gr|ed|lg)$/.test(labels[labels.length - 2] ?? '') ? 3 : 2;
+  return {
+    sub: labels.slice(0, Math.max(0, labels.length - depth)).join('.'),
+    registrable: labels.slice(Math.max(0, labels.length - depth)).join('.'),
+  };
+}
+
+/**
+ * その行き先を営業の問い合わせ先として使ってよいか。使えないなら理由を返す。
+ *
+ * 実データで見つけた誤り:
+ *   LINE や Instagram の口を問い合わせ先にしていた (9 件)
+ *     → 営業文を SNS に投稿する形になる。送ってよい相手ではない
+ *   採用応募の窓口を問い合わせ先にしていた (98 件)
+ *     → 応募者向けの窓口に営業を送るのは相手に迷惑で、こちらの印象も悪い
+ *
+ * 語がどこに出たかを見る。単なる文字列の一致では
+ * `3-ex.com` を x.com と、`alta-career.co.jp` を採用サイトと取り違える
+ * (どちらも実データにあった)。
+ */
+export function contactUrlRejectReason(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return '不正な形';
+  }
+  const { sub, registrable } = splitHost(parsed.hostname);
+  const path = `${parsed.pathname}${parsed.search}${parsed.hash}`.toLowerCase();
+
+  if (SNS_HOSTS.includes(registrable)) return 'SNS';
+  if (FILE_EXT.test(parsed.pathname)) return 'ファイル';
+
+  // 採用専用の下位ドメイン (recruit.example.co.jp) と、経路上の採用区画 (/recruit/)
+  const pathSegments = path.split(/[/?#&=]/);
+  const inSub = RECRUIT_WORDS.some((w) => sub.includes(w));
+  const inPath = RECRUIT_WORDS.some((w) => pathSegments.some((seg) => seg.includes(w)));
+  if (inSub || inPath || ENTRY_FORM.test(path)) return '採用向け';
+
+  if (OTHER_PAGE.test(path)) return '別ページ';
+  return null;
+}
+
 function findContactUrl(html: string, baseUrl: string): string | null {
   const links = [...html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)];
   for (const m of links) {
@@ -191,7 +259,10 @@ function findContactUrl(html: string, baseUrl: string): string | null {
     if (!CONTACT_HINTS.some((h) => haystack.includes(h))) continue;
     if (href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('#')) continue;
     try {
-      return new URL(href, baseUrl).toString();
+      const abs = new URL(href, baseUrl).toString();
+      // 採用窓口や SNS を営業の宛先にしない。次の候補を探す
+      if (contactUrlRejectReason(abs)) continue;
+      return abs;
     } catch {
       continue;
     }

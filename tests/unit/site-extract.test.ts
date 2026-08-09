@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  contactUrlRejectReason,
   extractFromHtml,
   findRefusal,
   findTel,
@@ -132,5 +133,53 @@ describe('extractFromHtml', () => {
 
   it('タグを落として本文だけにする', () => {
     expect(toText('<p>あ<script>var x=1</script>い</p>')).toBe('あ い');
+  });
+});
+
+describe('問い合わせ先として使ってよいか', () => {
+  // 実際に集めてしまったもの。営業文を SNS に投稿する形になっていた
+  it('SNS は宛先にしない', () => {
+    expect(contactUrlRejectReason('https://line.me/R/ti/p/8hkQT9W_-U')).toBe('SNS');
+    expect(contactUrlRejectReason('https://www.instagram.com/itsu2bashi_contact/?hl=ja')).toBe('SNS');
+    expect(contactUrlRejectReason('https://www.facebook.com/example/')).toBe('SNS');
+  });
+
+  // 実際に集めてしまったもの。応募者向けの窓口に営業を送ることになっていた
+  it('採用向けの窓口は宛先にしない', () => {
+    expect(contactUrlRejectReason('https://www.aaconst.co.jp/recruit_foreigner/')).toBe('採用向け');
+    expect(contactUrlRejectReason('https://acrotec.co.jp/recruitment-information')).toBe('採用向け');
+    expect(contactUrlRejectReason('https://recruit.3g-afy.co.jp/new_entry_form')).toBe('採用向け');
+    expect(contactUrlRejectReason('https://career.asahi-sun-clean.co.jp/information/')).toBe('採用向け');
+    expect(contactUrlRejectReason('https://autoserver.co.jp/careers/contact/')).toBe('採用向け');
+  });
+
+  it('語がどこに出たかを見る (社名の一部を採用サイトと取り違えない)', () => {
+    // 社名に career を含むだけの会社。ここは営業してよい相手である
+    expect(contactUrlRejectReason('https://alta-career.co.jp/contact')).toBeNull();
+    // 問い合わせ用紙の入口。応募用紙ではない
+    expect(contactUrlRejectReason('https://www.3-win.co.jp/inquiry/entry.php')).toBeNull();
+    expect(contactUrlRejectReason('https://armonia.co.jp/contact/entry/')).toBeNull();
+    // 一方 応募用紙とわかる形は外す
+    expect(contactUrlRejectReason('https://5corporation.co.jp/entryform/')).toBe('採用向け');
+  });
+
+  it('資料や別ページも宛先にしない', () => {
+    expect(contactUrlRejectReason('https://example.co.jp/pdf/annai.pdf')).toBe('ファイル');
+    expect(contactUrlRejectReason('https://example.co.jp/privacy/')).toBe('別ページ');
+  });
+
+  it('普通の問い合わせページは通す', () => {
+    expect(contactUrlRejectReason('https://example.co.jp/contact/')).toBeNull();
+    expect(contactUrlRejectReason('https://example.co.jp/inquiry.html')).toBeNull();
+    // 社名にたまたま x が入るだけの先を SNS と取り違えない
+    expect(contactUrlRejectReason('https://www.3-ex.com/contact_carport.html')).toBeNull();
+  });
+
+  it('弾いた先の次にある正しい問い合わせページを拾う', () => {
+    const html = `<a href="/recruit/contact/">採用のお問い合わせ</a>
+                  <a href="https://www.instagram.com/foo/">お問い合わせ</a>
+                  <a href="/contact/">お問い合わせ</a>`;
+    const e = extractFromHtml(html, 'https://example.co.jp/');
+    expect(e.contactUrl).toBe('https://example.co.jp/contact/');
   });
 });

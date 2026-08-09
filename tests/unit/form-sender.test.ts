@@ -105,3 +105,27 @@ describe('フォーム送信 (手元に立てた試験用フォームに対し�
     expect(outcome.status).toBe('failed');
   }, 60_000);
 });
+
+describe('送る直前の宛先の点検', () => {
+  it('採用の窓口には送らない', async () => {
+    const browser = await openBrowser();
+    try {
+      const r = await sendToForm(browser, 'https://recruit.example.co.jp/entry_form', VALUES, { live: true });
+      expect(r.outcome.status).toBe('skipped');
+      expect(r.outcome.status === 'skipped' && r.outcome.reason).toContain('採用向け');
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it('SNS には送らない', async () => {
+    const browser = await openBrowser();
+    try {
+      const r = await sendToForm(browser, 'https://line.me/R/ti/p/abc', VALUES, { live: true });
+      expect(r.outcome.status).toBe('skipped');
+      expect(r.outcome.status === 'skipped' && r.outcome.reason).toContain('SNS');
+    } finally {
+      await browser.close();
+    }
+  });
+});
