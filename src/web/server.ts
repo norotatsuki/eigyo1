@@ -67,6 +67,9 @@ export function filterFromParams(q: URLSearchParams): SearchFilter {
   if (assignedTo) filter.assignedTo = assignedTo;
   if (q.get('hasWebsite') === '1') filter.hasWebsite = true;
   if (q.get('hasContactForm') === '1') filter.hasContactForm = true;
+  if (q.get('hasEmail') === '1') filter.hasEmail = true;
+  if (q.get('reachable') === '1') filter.reachable = true;
+  if (q.get('hasRepresentative') === '1') filter.hasRepresentative = true;
   return filter;
 }
 
@@ -140,6 +143,26 @@ function handle(db: Db, meta: Meta, req: IncomingMessage, res: ServerResponse): 
       res.write(line + '\n');
     }
     res.end();
+    return;
+  }
+
+  /**
+   * 収集の進み具合。画面の見出しに出す。
+   *
+   * リストは今も増え続けている。「いま何件まで集まっているか」が
+   * 見えないと、少ない検索結果を見て「壊れている」と勘違いする。
+   */
+  if (url.pathname === '/api/progress') {
+    const one = (sql: string): number => (db.prepare(sql).get() as { n: number }).n;
+    sendJson(res, 200, {
+      hosts: one('SELECT COUNT(*) AS n FROM web_hosts'),
+      visited: one("SELECT COUNT(*) AS n FROM web_hosts WHERE crawl_status <> 'pending'"),
+      matched: one('SELECT COUNT(*) AS n FROM web_hosts WHERE corporate_number IS NOT NULL'),
+      withForm: one('SELECT COUNT(*) AS n FROM company_profiles WHERE contact_form_url IS NOT NULL'),
+      withEmail: one('SELECT COUNT(*) AS n FROM company_profiles WHERE contact_email IS NOT NULL'),
+      withRep: one('SELECT COUNT(*) AS n FROM company_profiles WHERE representative IS NOT NULL'),
+      refused: one('SELECT COUNT(*) AS n FROM company_profiles WHERE solicitation_refused = 1'),
+    });
     return;
   }
 

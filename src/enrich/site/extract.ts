@@ -52,24 +52,175 @@ export interface Extracted {
  * 明らかに無関係なもの (example / noreply / 拡張子が画像) は落とす。
  */
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-const EMAIL_REJECT = /(example\.|@sentry|noreply|no-reply|donotreply|\.(png|jpe?g|gif|webp|svg|css|js)$)/i;
+
+/**
+ * 営業の宛先として使ってはいけないアドレス。
+ *
+ * 実データで拾ってしまったもの:
+ *   sample@address.com  … 雛形のまま公開されている見本
+ *   recruit@…           … 応募者向けの窓口。営業を送る先ではない
+ *   noreply@…           … 送信専用。届かない
+ */
+const EMAIL_REJECT: ReadonlyArray<readonly [reason: string, pattern: RegExp]> = [
+  ['見本', /^(sample|example|test|dummy|hoge|foo|bar|aaa|xxx|yourname|your-?mail|mail)@|@(example|sample|test|dummy|address|domain|yourdomain|mailaddress)\./i],
+  ['送信専用', /^(noreply|no-reply|donotreply|do-not-reply|auto|automail|system|bounce|postmaster|mailer-daemon)@/i],
+  ['採用専用', /^(recruit|saiyo|saiyou|jinji|entry|career|job|kyujin)@/i],
+  ['ファイル', /\.(png|jpe?g|gif|webp|svg|css|js|woff2?)$/i],
+  ['計測', /@(sentry|wixpress|sentry\.io)/i],
+];
+
+/** そのアドレスを営業の宛先として使ってよいか。使えないなら理由を返す。 */
+export function emailRejectReason(email: string): string | null {
+  const value = email.trim();
+  if (!/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(value)) return '形が違う';
+  for (const [reason, pattern] of EMAIL_REJECT) {
+    if (pattern.test(value)) return reason;
+  }
+  return null;
+}
+
+/**
+ * 難読化して書かれたメールアドレスを読み取る。
+ *
+ * 迷惑メール避けに `info [at] example.jp` のような書き方をするサイトがある。
+ * これは **公開されているアドレス** であって、推測でも生成でもない。
+ * 書き方を戻すだけで、無いものを作り出してはいけない。
+ *
+ * 実測 (メールが取れなかった 120 社): 34 件見つかったうち 2 件がこの形。
+ */
+/** アットマークの書き換え。 */
+const AT_MARK = String.raw`(?:\[\s*at\s*\]|\(\s*at\s*\)|＠|&#0*64;|&#x40;|\s+at\s+|＜at＞|%40)`;
+/** ドットの書き換え。 */
+const DOT_MARK = String.raw`(?:\[\s*dot\s*\]|\(\s*dot\s*\)|&#0*46;|\s+dot\s+|\.)`;
+
+/**
+ * ドメイン部は区切りが何回も現れる (`kaisha (dot) co (dot) jp`)。
+ * 1 回だけを見ると `kaisha.co` で切れてしまうため、繰り返しとして受ける。
+ */
+const OBFUSCATED_RE = new RegExp(
+  String.raw`([a-zA-Z0-9._%+-]{1,64})\s*${AT_MARK}\s*` +
+    String.raw`((?:[a-zA-Z0-9-]{1,63}\s*${DOT_MARK}\s*)+[a-zA-Z]{2,12})(?![a-zA-Z])`,
+  'i',
+);
+const DOT_MARK_G = new RegExp(DOT_MARK, 'gi');
+
+export function findObfuscatedEmail(text: string): string | null {
+  const m = text.match(OBFUSCATED_RE);
+  if (!m?.[1] || !m[2]) return null;
+  const domain = m[2].replace(DOT_MARK_G, '.').replace(/\s+/g, '');
+  const candidate = `${m[1]}@${domain}`.toLowerCase();
+  return emailRejectReason(candidate) ? null : candidate;
+}
 
 export function findEmail(html: string, text: string, host?: string): string | null {
   const candidates: string[] = [];
   for (const m of html.matchAll(/mailto:([^"'?>\s]+)/gi)) {
     if (m[1]) candidates.push(decodeURIComponent(m[1]));
   }
-  candidates.push(...(text.match(EMAIL_RE) ?? []));
+  // 数値文字参照で書かれたアドレス (&#105;&#110;… ) を戻してから探す
+  const decoded = text.replace(/&#(\d{1,4});/g, (_, d: string) => String.fromCharCode(Number(d)));
+  candidates.push(...(decoded.match(EMAIL_RE) ?? []));
 
-  const usable = candidates.map((c) => c.trim()).filter((c) => EMAIL_RE.test(c) && !EMAIL_REJECT.test(c));
-  if (usable.length === 0) return null;
-  // そのサイトのドメインのアドレスがあれば、それが本命
-  if (host) {
-    const bare = host.replace(/^www\./, '');
-    const own = usable.find((c) => c.toLowerCase().endsWith(`@${bare}`) || c.toLowerCase().endsWith(`.${bare}`));
-    if (own) return own;
+  const usable = candidates.map((c) => c.trim()).filter((c) => emailRejectReason(c) === null);
+  if (usable.length > 0) {
+    // そのサイトのドメインのアドレスがあれば、それが本命
+    if (host) {
+      const bare = host.replace(/^www\./, '');
+      const own = usable.find((c) => c.toLowerCase().endsWith(`@${bare}`) || c.toLowerCase().endsWith(`.${bare}`));
+      if (own) return own;
+    }
+    return usable[0] ?? null;
   }
-  return usable[0] ?? null;
+  // 普通の書き方で無ければ、難読化された書き方を探す
+  return findObfuscatedEmail(decoded);
+}
+
+/**
+ * 代表者名を拾う。
+ *
+ * 会社概要の「代表取締役　山田 太郎」を狙う。役職だけの行や、
+ * 「代表取締役社長室」のような部署名を人名と取り違えないよう、
+ * 姓名の形になっているものだけを採る。
+ */
+const REP_TITLES = [
+  '代表取締役社長', '代表取締役会長', '代表取締役', '代表社員', '代表理事',
+  '取締役社長', '理事長', '代表者名', '代表者', '園長', '院長', '所長', '社長',
+];
+/** 人名に使う文字。ここに無い文字が混ざったら人名ではない */
+const NAME_CHARS = '[一-龥々ぁ-んァ-ヶー]';
+/**
+ * 人名に見えて人名でないもの。
+ *
+ * 「代表取締役社長室のご案内」から「室のご案内」を人名として取っていた。
+ * 部署・組織を表す語と、人名にはまず現れない助詞で弾く。
+ */
+const NOT_A_NAME =
+  /(部|課|室|係|会社|法人|組合|グループ|センター|事業|本部|支店|営業所|工場|一同|挨拶|紹介|案内|情報|の|を|は|が|に|で|と|も|ご|お|様|御)/;
+
+/**
+ * 会社概要の見出し語。代表者名の直後にはこれが続くことが多い。
+ *
+ * 実データ: 「代表者 宇佐美浩一 設立」から「宇佐美浩一 設立」を人名として取っていた。
+ * 表を字面で読んでいる以上、隣の見出しに食い込むことは避けられないので、
+ * 見出し語だったら切り落とす。
+ */
+const PROFILE_LABELS = [
+  '設立', '創業', '資本金', '所在地', '住所', '電話', '本社', '従業員', '事業', '業務', '沿革',
+  '許可', '免許', '登録', '取引', '売上', '決算', '役員', '主要', '加盟', '認証', '営業', '代表',
+];
+
+export function findRepresentative(text: string): string | null {
+  for (const title of REP_TITLES) {
+    // 「代表取締役 山田 太郎」「代表者：山田太郎」の形。
+    // 区切りは原文のまま残す。姓と名の切れ目は書かれていない限り分からず、
+    // 勝手に入れると「佐藤花子」を「佐藤花 子」にしてしまう
+    const re = new RegExp(`${title}\\s*[:：]?\\s*(${NAME_CHARS}{1,5})([\\s　]?)(${NAME_CHARS}{1,5})`);
+    const m = text.match(re);
+    if (!m?.[1] || !m[3]) continue;
+
+    // 姓のうしろが見出し語なら、そこで切る (「宇佐美浩一 設立」→「宇佐美浩一」)
+    let family = m[1];
+    let given = m[3];
+    if (PROFILE_LABELS.some((w) => given === w || given.startsWith(w))) {
+      if (family.length < 3) continue; // 姓だけでは短すぎる。人名と断定しない
+      given = '';
+    }
+    for (const w of PROFILE_LABELS) {
+      if (given.endsWith(w) && given.length > w.length) given = given.slice(0, -w.length);
+      if (family.endsWith(w) && family.length > w.length) family = family.slice(0, -w.length);
+    }
+
+    const joined = `${family}${given}`;
+    if (joined.length < 2 || joined.length > 10) continue;
+    if (NOT_A_NAME.test(joined)) continue;
+    if (PROFILE_LABELS.some((w) => joined.includes(w))) continue;
+    // 役職名がそのまま続いただけのものを弾く
+    if (REP_TITLES.some((t) => joined.includes(t) || t.includes(joined))) continue;
+    return given === '' ? family : `${family}${m[2]}${given}`;
+  }
+  return null;
+}
+
+/**
+ * 事業内容の記述を、本文に書かれたまま取り出す。
+ *
+ * 業種を社名から推し量ると当てにならない (「株式会社丸十製陶」は陶器か焼肉か)。
+ * 会社が自分で書いた事業内容があれば、それが根拠になる。
+ * ここでは判定をせず、**原文をそのまま返す**。判定はこれを読んだ側が行う。
+ */
+const BUSINESS_LABELS = ['事業内容', '業務内容', '事業概要', '主な事業', '営業品目', '取扱品目', '事業領域'];
+
+export function findBusinessDescription(text: string): string | null {
+  for (const label of BUSINESS_LABELS) {
+    const i = text.indexOf(label);
+    if (i === -1) continue;
+    const after = text.slice(i + label.length).replace(/^[\s　:：]+/, '');
+    // 次の見出しらしきものまで、または 200 字まで
+    const value = after.split(/(?:資本金|設立|従業員|代表者|所在地|電話|沿革|許可|加盟)/)[0] ?? '';
+    const trimmed = value.trim().slice(0, 200);
+    if (trimmed.length >= 4) return trimmed;
+  }
+  return null;
 }
 
 /** タグを落として本文だけにする。 */

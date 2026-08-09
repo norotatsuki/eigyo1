@@ -7,10 +7,18 @@
 import type { Db } from '../../db/index.ts';
 import { normalizeCompanyName } from '../../normalize/company-name.ts';
 import { invalidateMeta, loadMeta } from '../../search/meta.ts';
-import { contactUrlRejectReason, extractFromHtml, toText, trimmedNameVariants, type Extracted } from './extract.ts';
+import {
+  contactUrlRejectReason, extractFromHtml, findBusinessDescription, findRepresentative,
+  toText, trimmedNameVariants, type Extracted,
+} from './extract.ts';
 import { extractScale } from './scale.ts';
 import { extractRecruit, findRecruitUrl, type Recruit } from './recruit.ts';
 import { SOURCE as DOMAIN_LIST_SOURCE } from '../../ingest/commoncrawl/domains.ts';
+
+/** 事業内容の根拠。会社が自分で書いた文をそのまま残す。 */
+function businessEvidence(text: string): string | null {
+  return findBusinessDescription(text);
+}
 
 /** 会社概要から拾えた規模。1 つも取れなければ出典も残さない。 */
 function scaleOf(text: string): {
@@ -25,8 +33,26 @@ const USER_AGENT = 'eigyo1-site-collector/0.1 (internal sales list builder)';
 const TIMEOUT_MS = 15_000;
 const MAX_BYTES = 1_500_000;
 
-/** 会社概要が置かれがちな場所。上から順に試す。 */
-const PROFILE_PATHS = ['/company/', '/company.html', '/about/', '/corporate/', '/outline/', '/profile/'];
+/**
+ * 会社の事実が置かれがちな場所。上から順に試す。
+ *
+ * 並びは「取れる見込みの高い順」。実測でメールが最も見つかったのは
+ * プライバシーポリシー (追加で見つかった 34 件のうち 17 件) だった。
+ * 会社概要は社名・住所・代表者が揃うので先に見る。
+ */
+const DETAIL_PATHS = [
+  '/company/', '/company.html', '/about/', '/corporate/', '/outline/', '/profile/',
+  '/privacy/', '/privacypolicy/', '/policy/', '/privacy-policy/',
+  '/contact/', '/inquiry/', '/contact.html',
+  '/tokushoho/', '/law/', '/legal/',
+  '/greeting/', '/message/',
+];
+
+/** robots.txt の確認に使う代表的な道筋。 */
+const PROFILE_PATHS = DETAIL_PATHS.slice(0, 6);
+
+/** 1 サイトあたりに開く下位ページの上限。相手の負担を抑える。 */
+const MAX_PAGES_PER_SITE = 6;
 
 export interface CrawlOptions {
   limit?: number;
@@ -49,6 +75,71 @@ interface Collected {
   info?: Extracted;
   pageText?: string;
   recruit?: Recruit | null;
+  representative?: string | null;
+  /** 項目ごとに、どのページから取ったか。後から検証できるように残す */
+  sources?: FieldSources;
+}
+
+/** 項目 → 取得元 URL。空欄の項目は入らない。 */
+export type FieldSources = Partial<Record<
+  'name' | 'address' | 'tel' | 'email' | 'contactUrl' | 'representative' | 'refusedText',
+  string
+>>;
+
+/** 収集の途中経過。ページを見るたびに、まだ空いている項目だけを埋める。 */
+interface Accumulator {
+  info: Extracted;
+  representative: string | null;
+  sources: FieldSources;
+  text: string;
+  pagesFetched: number;
+}
+
+function newAccumulator(): Accumulator {
+  return {
+    info: { name: null, address: null, tel: null, email: null, contactUrl: null, refusedText: null },
+    representative: null,
+    sources: {},
+    text: '',
+    pagesFetched: 0,
+  };
+}
+
+/**
+ * 1 ページ分の抽出結果を取り込む。
+ *
+ * 先に取れた値を優先する (上位のページほど確からしいため)。
+ * 埋めた項目には、その値をどのページから取ったかを必ず残す。
+ */
+function absorb(acc: Accumulator, more: Extracted, url: string, html: string): void {
+  for (const key of ['name', 'address', 'tel', 'email', 'contactUrl', 'refusedText'] as const) {
+    if (acc.info[key] === null && more[key] !== null) {
+      acc.info[key] = more[key];
+      acc.sources[key] = url;
+    }
+  }
+  const text = toText(html);
+  acc.text = acc.text.length > 0 ? `${acc.text}\n${text}` : text;
+  if (acc.representative === null) {
+    const rep = findRepresentative(text);
+    if (rep) {
+      acc.representative = rep;
+      acc.sources.representative = url;
+    }
+  }
+}
+
+/**
+ * 欲しいものが揃ったか。
+ *
+ * 宛先 (メール または 問い合わせフォーム) は必ず要る。
+ * 会社を特定するために社名と、住所か電話のどちらかも要る。
+ * 代表者名は取れれば良い程度で、これを待って何ページも開かない。
+ */
+function satisfied(acc: Accumulator): boolean {
+  const hasDestination = acc.info.email !== null || acc.info.contactUrl !== null;
+  const hasIdentity = acc.info.name !== null && (acc.info.address !== null || acc.info.tel !== null);
+  return hasDestination && hasIdentity && acc.representative !== null;
 }
 
 export interface CrawlResult {
@@ -417,7 +508,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
   const update = db.prepare(
     `UPDATE web_hosts SET crawl_status = ?, crawled_at = ?, http_status = ?, error = ?,
        site_name = ?, site_address = ?, site_tel = ?, site_email = ?, contact_url = ?, refused_text = ?,
-       site_text = ?,
+       site_text = ?, site_representative = ?, field_sources = ?,
        corporate_number = ?, match_confidence = ?, match_method = ?
      WHERE host = ?`,
   );
@@ -425,10 +516,10 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     `INSERT INTO company_profiles
        (corporate_number, website_url, website_confidence, website_checked_at,
         contact_form_url, contact_email, contact_tel, solicitation_refused, refused_evidence,
-        capital, employees, revenue, scale_source,
+        capital, employees, revenue, scale_source, representative, field_sources, business_evidence,
         hiring, hiring_roles, hiring_new_grad, hiring_mid_career, hiring_checked_at, updated_at)
      VALUES (@n, @url, @conf, @at, @form, @email, @tel, @refused, @evidence,
-             @capital, @employees, @revenue, @scaleSource,
+             @capital, @employees, @revenue, @scaleSource, @rep, @sources, @evidenceText,
              @hiring, @hiringRoles, @newGrad, @midCareer, @hiringAt, @at)
      ON CONFLICT(corporate_number) DO UPDATE SET
        website_url = excluded.website_url,
@@ -448,6 +539,9 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
        employees = COALESCE(excluded.employees, company_profiles.employees),
        revenue = COALESCE(excluded.revenue, company_profiles.revenue),
        scale_source = COALESCE(excluded.scale_source, company_profiles.scale_source),
+       representative = COALESCE(excluded.representative, company_profiles.representative),
+       field_sources = COALESCE(excluded.field_sources, company_profiles.field_sources),
+       business_evidence = COALESCE(excluded.business_evidence, company_profiles.business_evidence),
        updated_at = excluded.updated_at`,
   );
 
@@ -492,26 +586,27 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
       };
     }
 
-    let info = extractFromHtml(top.body, `${origin}/`);
-    let pageText = toText(top.body);
+    const acc = newAccumulator();
+    absorb(acc, extractFromHtml(top.body, `${origin}/`), `${origin}/`, top.body);
 
-    if (!info.name || !info.address) {
-      for (const path of PROFILE_PATHS) {
-        await sleep(politeMs);
-        const page = await fetchText(`${origin}${path}`);
-        if (!page || page.body === '') continue;
-        const more = extractFromHtml(page.body, `${origin}${path}`);
-        pageText = `${pageText}\n${toText(page.body)}`;
-        info = {
-          name: info.name ?? more.name,
-          address: info.address ?? more.address,
-          tel: info.tel ?? more.tel,
-          email: info.email ?? more.email,
-          contactUrl: info.contactUrl ?? more.contactUrl,
-          refusedText: info.refusedText ?? more.refusedText,
-        };
-        break; // 1 サイトにつき追加 1 ページまで
-      }
+    /**
+     * 足りない項目が埋まるまで、順に下位ページを見る。
+     *
+     * 実測 (メールが取れなかった 120 社を追加ページまで見た): 28% で見つかった。
+     * 内訳は /privacy/ 17 件 / /contact/ 7 件 / /recruit/ 3 件 / /company/ 2 件。
+     * プライバシーポリシーに問い合わせ先を書く慣行があり、ここが最も効く。
+     *
+     * 全ページを必ず見ると 1 サイトあたり 10 往復になり、相手にも自分にも重い。
+     * 欲しいものが揃った時点で切り上げる。
+     */
+    for (const path of DETAIL_PATHS) {
+      if (satisfied(acc)) break;
+      if (acc.pagesFetched >= MAX_PAGES_PER_SITE) break;
+      await sleep(politeMs);
+      const page = await fetchText(`${origin}${path}`);
+      if (!page || page.body === '') continue;
+      acc.pagesFetched++;
+      absorb(acc, extractFromHtml(page.body, `${origin}${path}`), `${origin}${path}`, page.body);
     }
 
     let recruit: Recruit | null = null;
@@ -524,16 +619,19 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
 
     // 営業お断りは問い合わせページに書かれていることが多い。見落とすと
     // 断られている相手に送ることになるので、ここは必ず確かめる
-    if (info.contactUrl && !info.refusedText) {
+    if (acc.info.contactUrl && !acc.info.refusedText) {
       await sleep(politeMs);
-      const contactPage = await fetchText(info.contactUrl);
+      const contactPage = await fetchText(acc.info.contactUrl);
       if (contactPage && contactPage.body !== '') {
-        const onContact = extractFromHtml(contactPage.body, info.contactUrl);
-        if (onContact.refusedText) info.refusedText = onContact.refusedText;
+        absorb(acc, extractFromHtml(contactPage.body, acc.info.contactUrl), acc.info.contactUrl, contactPage.body);
       }
     }
 
-    return { host, origin, status: 'ok', httpStatus: top.status, info, pageText, recruit };
+    return {
+      host, origin, status: 'ok', httpStatus: top.status,
+      info: acc.info, pageText: acc.text, recruit,
+      representative: acc.representative, sources: acc.sources,
+    };
   };
 
   /** 集めた結果を書き込む。書き込みは 1 本にまとめる (SQLite は書き手が 1 つ)。 */
@@ -545,7 +643,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
       if (c.status === 'disallowed') result.disallowed++;
       else result.failed++;
       update.run(c.status, now, c.httpStatus ?? null, c.error ?? null,
-        null, null, null, null, null, null, null, null, null, null, c.host);
+        null, null, null, null, null, null, null, null, null, null, null, null, c.host);
       return;
     }
 
@@ -556,10 +654,11 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
     if (info.refusedText) result.refusedFound++;
     if (info.contactUrl) result.contactFound++;
 
+    const sources = c.sources && Object.keys(c.sources).length > 0 ? JSON.stringify(c.sources) : null;
     update.run(
       'ok', now, c.httpStatus ?? null, null,
       info.name, info.address, info.tel, info.email, info.contactUrl, info.refusedText,
-      (c.pageText ?? '').slice(0, 4000),
+      (c.pageText ?? '').slice(0, 4000), c.representative ?? null, sources,
       match?.corporateNumber ?? null, match?.confidence ?? null, match?.method ?? null,
       c.host,
     );
@@ -576,6 +675,9 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
         tel: info.tel,
         refused: info.refusedText ? 1 : 0,
         evidence: info.refusedText ? `${c.origin}: ${info.refusedText}` : null,
+        rep: c.representative ?? null,
+        sources,
+        evidenceText: businessEvidence(c.pageText ?? ''),
         ...scaleOf(c.pageText ?? ''),
         hiring: recruit ? (recruit.hiring ? 1 : 0) : null,
         hiringRoles: recruit && recruit.roles.length > 0 ? recruit.roles.join(',') : null,
@@ -604,7 +706,7 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
         result.failed++;
         update.run('failed', new Date().toISOString(), null,
           err instanceof Error ? err.message : String(err),
-          null, null, null, null, null, null, null, null, null, null, host);
+          null, null, null, null, null, null, null, null, null, null, null, null, host);
       }
       if (delayMs > 0) await sleep(delayMs);
     }

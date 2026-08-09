@@ -78,8 +78,16 @@
   table { width: 100%; min-width: 660px; border-collapse: collapse; background: var(--panel); font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .04em; white-space: nowrap; }
-  col.c-name { width: 26%; } col.c-ind { width: 14%; } col.c-addr { width: 33%; }
-  col.c-num { width: 14%; } col.c-reach { width: 13%; }
+  col.c-name { width: 23%; } col.c-ind { width: 12%; } col.c-addr { width: 27%; }
+  col.c-num { width: 12%; } col.c-reach { width: 14%; } col.c-rep { width: 12%; }
+  tr.head { cursor: pointer; }
+  tr.head:hover { background: #fcfcfa; }
+  tr.detail > td { background: #fafaf7; padding: 12px 14px; }
+  .detail-grid { display: grid; grid-template-columns: 7em 1fr; gap: 4px 12px; font-size: 12px; }
+  .detail-grid dt { color: var(--muted); }
+  .detail-grid dd { margin: 0; word-break: break-all; }
+  .detail-grid a { color: var(--accent); }
+  .src { font-size: 11px; color: var(--muted); }
   .reach a { color: var(--accent); text-decoration: none; font-size: 12px; }
   .reach a:hover { text-decoration: underline; }
   .reach .none { color: var(--muted); font-size: 12px; }
@@ -96,6 +104,15 @@
   .pager span { color: var(--muted); font-size: 12px; }
   .empty { padding: 40px; text-align: center; color: var(--muted); }
   .note { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.5; }
+  /* 収集は今も動いている。少ない結果を見て「壊れている」と思わせないための帯 */
+  .progress {
+    background: var(--accent-soft); border-bottom: 1px solid var(--line);
+    padding: 7px 20px; font-size: 12px; color: var(--accent);
+    display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
+  }
+  .progress b { font-variant-numeric: tabular-nums; }
+  .bar { flex: 1; min-width: 120px; height: 5px; background: #fff; border-radius: 3px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
 </style>
 </head>
 <body>
@@ -104,6 +121,8 @@
   <span class="basis" id="basis">読み込み中…</span>
   <span class="local">この画面はこの端末だけで動いています（社外・社内の他端末からは開けません）</span>
 </header>
+
+<div class="progress" id="progress" hidden></div>
 
 <div class="layout">
   <aside>
@@ -164,8 +183,15 @@
 
     <fieldset>
       <span class="lbl">接触経路</span>
+      <label class="check"><input type="checkbox" id="reachable"> <b>送れる先だけ</b> (メール または フォーム)</label>
+      <label class="check"><input type="checkbox" id="hasEmail"> メールが判明している先だけ</label>
+      <label class="check"><input type="checkbox" id="hasContactForm"> フォームが判明している先だけ</label>
+      <label class="check"><input type="checkbox" id="hasRepresentative"> 代表者名が判明している先だけ</label>
       <label class="check"><input type="checkbox" id="hasWebsite"> サイトが判明している先だけ</label>
-      <label class="check"><input type="checkbox" id="hasContactForm"> 問い合わせ先が判明している先だけ</label>
+      <div class="note">
+        宛先は経路ごとに要ります。メールを全体の必須にすると、
+        フォームでは送れる先まで落ちます (収集できたサイトの 7 割が「メール無し・フォーム有」)。
+      </div>
       <div class="note">サイトは Common Crawl から発見して収集した分。まだ全社には行き渡っていません</div>
     </fieldset>
 
@@ -193,14 +219,15 @@
     <div class="wrap">
       <table>
         <colgroup>
-          <col class="c-name"><col class="c-ind"><col class="c-addr"><col class="c-reach"><col class="c-num">
+          <col class="c-name"><col class="c-ind"><col class="c-addr">
+          <col class="c-reach"><col class="c-rep"><col class="c-num">
         </colgroup>
         <thead>
           <tr>
-            <th>商号</th><th>業種</th><th>所在地</th><th>接触経路</th><th>法人番号</th>
+            <th>商号</th><th>業種</th><th>所在地</th><th>宛先</th><th>代表者</th><th>法人番号</th>
           </tr>
         </thead>
-        <tbody id="rows"><tr><td colspan="5" class="empty">読み込み中…</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="6" class="empty">読み込み中…</td></tr></tbody>
       </table>
     </div>
 
@@ -236,68 +263,146 @@ function buildParams() {
   if (conf) p.set('industryConfidence', conf);
   if ($('assignedFrom').value) p.set('assignedFrom', $('assignedFrom').value);
   if ($('assignedTo').value) p.set('assignedTo', $('assignedTo').value);
+  if ($('reachable').checked) p.set('reachable', '1');
+  if ($('hasEmail').checked) p.set('hasEmail', '1');
   if ($('hasWebsite').checked) p.set('hasWebsite', '1');
   if ($('hasContactForm').checked) p.set('hasContactForm', '1');
+  if ($('hasRepresentative').checked) p.set('hasRepresentative', '1');
   if ($('includeInactive').checked) p.set('includeInactive', '1');
   if ($('includeRefused').checked) p.set('includeRefused', '1');
   p.set('order', $('order').value);
   return p;
 }
 
+function link(label, href) {
+  const a = document.createElement('a');
+  a.href = href; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = label;
+  return a;
+}
+
+function muted(text) {
+  const s = document.createElement('span');
+  s.className = 'none'; s.textContent = text;
+  return s;
+}
+
+/** 宛先の欄。どちらの経路で送れるかが一目で分かるようにする。 */
+function destinationCell(r) {
+  const td = document.createElement('td');
+  td.className = 'reach';
+  const parts = [];
+  if (r.contact_email) parts.push(link('メール', 'mailto:' + r.contact_email));
+  if (r.contact_form_url) parts.push(link('フォーム', r.contact_form_url));
+  if (parts.length === 0) {
+    td.append(muted(r.address_full ? '郵送のみ' : 'なし'));
+    return td;
+  }
+  parts.forEach((el, i) => {
+    if (i > 0) td.append(document.createTextNode(' / '));
+    td.append(el);
+  });
+  return td;
+}
+
+/**
+ * その行の根拠。どの項目をどのページから取ったかを開いて見せる。
+ *
+ * 営業リストは後から確かめられないと使えない。取った値だけでなく、
+ * 取った場所を必ず添える。
+ */
+const SOURCE_LABELS = {
+  name: '会社名', address: '所在地', tel: '電話番号', email: 'メール',
+  contactUrl: 'フォーム', representative: '代表者', refusedText: '営業お断り',
+};
+
+function detailRow(r) {
+  const tr = document.createElement('tr');
+  tr.className = 'detail';
+  const td = document.createElement('td');
+  td.colSpan = 6;
+
+  const dl = document.createElement('dl');
+  dl.className = 'detail-grid';
+  const add = (term, node) => {
+    const dt = document.createElement('dt'); dt.textContent = term;
+    const dd = document.createElement('dd');
+    dd.append(node);
+    dl.append(dt, dd);
+  };
+
+  if (r.business_evidence) add('事業内容', document.createTextNode(r.business_evidence));
+  if (r.capital) add('資本金', document.createTextNode(fmt(r.capital) + ' 円'));
+  if (r.employees) add('従業員数', document.createTextNode(fmt(r.employees) + ' 人'));
+  if (r.revenue) add('売上高', document.createTextNode(fmt(r.revenue) + ' 円'));
+  if (r.hiring_roles) add('募集職種', document.createTextNode(r.hiring_roles.split(',').join(' / ')));
+  if (r.website_url) add('サイト', link(r.website_url, r.website_url));
+  if (r.contact_email) add('メール', document.createTextNode(r.contact_email));
+
+  let sources = null;
+  try { sources = r.field_sources ? JSON.parse(r.field_sources) : null; } catch (e) { sources = null; }
+  if (sources) {
+    const box = document.createElement('div');
+    for (const [key, url] of Object.entries(sources)) {
+      const line = document.createElement('div');
+      line.className = 'src';
+      line.append(document.createTextNode((SOURCE_LABELS[key] || key) + ' ← '), link(url, url));
+      box.append(line);
+    }
+    add('出典', box);
+  } else {
+    add('出典', muted('この先は出典を記録する前に収集したものです'));
+  }
+
+  td.append(dl);
+  tr.append(td);
+  return tr;
+}
+
 function renderRows(rows) {
   const tbody = $('rows');
   if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">条件に合う法人がありません</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">条件に合う法人がありません</td></tr>';
     return;
   }
-  tbody.replaceChildren(...rows.map((r) => {
+  const out = [];
+  for (const r of rows) {
     const tr = document.createElement('tr');
-    const cells = [
-      r.name,
-      null, // 業種はタグで入れる
-      (r.post_code ? '〒' + r.post_code + ' ' : '') + r.address_full,
-      null, // 接触経路はリンクで入れる
-      r.corporate_number,
-    ];
-    cells.forEach((v, i) => {
-      const td = document.createElement('td');
-      if (i === 1) {
-        if (r.industry_name) {
-          const tag = document.createElement('span');
-          tag.className = 'tag';
-          tag.textContent = r.industry_name;
-          td.append(tag);
-        }
-      } else if (i === 3) {
-        td.className = 'reach';
-        const links = [];
-        if (r.website_url) links.push(['サイト', r.website_url]);
-        if (r.contact_form_url) links.push(['問い合わせ', r.contact_form_url]);
-        if (links.length === 0) {
-          const s = document.createElement('span');
-          s.className = 'none';
-          s.textContent = '郵送のみ';
-          td.append(s);
-        } else {
-          links.forEach(([label, href], k) => {
-            if (k > 0) td.append(document.createTextNode(' / '));
-            const a = document.createElement('a');
-            a.href = href;
-            a.target = '_blank';
-            a.rel = 'noopener noreferrer';
-            a.textContent = label;
-            td.append(a);
-          });
-        }
-      } else {
-        td.textContent = v;
-        if (i === 0) td.className = 'name';
-        if (i === 4) td.className = 'num';
-      }
-      tr.append(td);
+    tr.className = 'head';
+
+    const name = document.createElement('td');
+    name.className = 'name';
+    name.textContent = r.name;
+
+    const ind = document.createElement('td');
+    if (r.industry_name) {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = r.industry_name;
+      ind.append(tag);
+    }
+
+    const addr = document.createElement('td');
+    addr.textContent = (r.post_code ? '〒' + r.post_code + ' ' : '') + r.address_full;
+
+    const rep = document.createElement('td');
+    if (r.representative) rep.textContent = r.representative;
+    else rep.append(muted('—'));
+
+    const num = document.createElement('td');
+    num.className = 'num';
+    num.textContent = r.corporate_number;
+
+    tr.append(name, ind, addr, destinationCell(r), rep, num);
+
+    const detail = detailRow(r);
+    detail.hidden = true;
+    tr.addEventListener('click', (e) => {
+      if (e.target.tagName === 'A') return; // 宛先を開くための click は素通しする
+      detail.hidden = !detail.hidden;
     });
-    return tr;
-  }));
+    out.push(tr, detail);
+  }
+  tbody.replaceChildren(...out);
 }
 
 // 件数の集計は数秒かかることがある。一覧を待たせないよう別々に投げ、
@@ -410,6 +515,40 @@ function fillIndustries(items) {
   box.replaceChildren(...nodes);
 }
 
+/**
+ * 収集の進み具合を帯で出す。
+ *
+ * サイトの情報は今も集めている途中で、絞り込むと件数が少ないことがある。
+ * どこまで進んでいるかが見えないと、壊れていると受け取られる。
+ */
+async function refreshProgress() {
+  const box = $('progress');
+  try {
+    const p = await (await fetch('/api/progress')).json();
+    const done = p.hosts > 0 ? Math.round((p.visited / p.hosts) * 100) : 0;
+    box.replaceChildren();
+    const text = document.createElement('span');
+    text.innerHTML =
+      'サイト収集 <b>' + fmt(p.visited) + '</b> / ' + fmt(p.hosts) + ' 件 (' + done + '%)';
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    const fill = document.createElement('i');
+    fill.style.width = done + '%';
+    bar.append(fill);
+    const detail = document.createElement('span');
+    detail.innerHTML =
+      '法人に紐付き <b>' + fmt(p.matched) + '</b>' +
+      ' ／ フォーム <b>' + fmt(p.withForm) + '</b>' +
+      ' ／ メール <b>' + fmt(p.withEmail) + '</b>' +
+      ' ／ 代表者 <b>' + fmt(p.withRep) + '</b>' +
+      ' ／ 営業お断り <b>' + fmt(p.refused) + '</b>';
+    box.append(text, bar, detail);
+    box.hidden = false;
+  } catch (e) {
+    box.hidden = true; // 進み具合が取れなくても検索の邪魔はしない
+  }
+}
+
 async function boot() {
   const meta = await (await fetch('/api/meta')).json();
   $('basis').textContent =
@@ -419,6 +558,8 @@ async function boot() {
   fetch('/api/outreach-summary').then((r) => r.json()).then((o) => {
     $('basis').textContent += ' ／ 除外 ' + fmt(o.suppressed) + ' 社 ／ 接触済み ' + fmt(o.contacted) + ' 社';
   });
+  void refreshProgress();
+  setInterval(refreshProgress, 30000);
   fillIndustries(meta.industries);
   fillList('pref', meta.prefectures, 'code');
   fillList('kind', meta.kinds, 'code');
@@ -427,7 +568,8 @@ async function boot() {
 
   for (const id of ['keyword']) $(id).addEventListener('input', schedule);
   for (const id of ['industryConfidence', 'assignedFrom', 'assignedTo', 'order',
-                    'hasWebsite', 'hasContactForm', 'includeInactive', 'includeRefused']) {
+                    'reachable', 'hasEmail', 'hasContactForm', 'hasRepresentative',
+                    'hasWebsite', 'includeInactive', 'includeRefused']) {
     $(id).addEventListener('change', schedule);
   }
   $('prev').addEventListener('click', () => { offset = Math.max(0, offset - LIMIT); run(); });

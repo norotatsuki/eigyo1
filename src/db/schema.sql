@@ -134,6 +134,9 @@ CREATE TABLE IF NOT EXISTS company_profiles (
   -- 接触経路
   contact_form_url      TEXT,
   contact_email         TEXT,
+  representative        TEXT,   -- 代表者名
+  field_sources         TEXT,   -- 項目ごとの取得元 URL (JSON)。後から検証できるように残す
+  business_evidence     TEXT,   -- 事業内容の根拠。本文から取った原文
   contact_tel           TEXT,
 
   -- 採用の様子。「動いている」印であり、募集職種は当てる部署の手がかりになる
@@ -182,6 +185,8 @@ CREATE TABLE IF NOT EXISTS web_hosts (
   site_tel        TEXT,
   site_email      TEXT,
   contact_url     TEXT,                  -- 問い合わせページ
+  site_representative TEXT,              -- 代表者名 (サイトに書かれていた形のまま)
+  field_sources   TEXT,                  -- 項目ごとの取得元 URL (JSON)
   refused_text    TEXT,                  -- 営業お断りの文言 (見つかった場合)
   -- 本文の先頭 (LLM に読ませるため)。訪ね直さずに読み直せるようにする。
   -- 1 件 4KB 前後。34.8 万件で 1.4GB ほどになる見込み

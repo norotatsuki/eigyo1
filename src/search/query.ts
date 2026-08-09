@@ -39,6 +39,18 @@ export interface SearchFilter {
   hasWebsite?: boolean;
   /** 問い合わせフォームが判明している先だけに絞る */
   hasContactForm?: boolean;
+  /** 公開メールが判明している先だけに絞る */
+  hasEmail?: boolean;
+  /**
+   * 送れる先だけに絞る (メール **または** フォーム)。
+   *
+   * 宛先は経路ごとに要る。メールを全体の必須にすると、フォームでは
+   * 送れる先まで捨ててしまう (実測: 収集できたサイトの 70% が
+   * 「メール無し・フォーム有」だった)。
+   */
+  reachable?: boolean;
+  /** 代表者名が判明している先だけに絞る */
+  hasRepresentative?: boolean;
   /** 採用しているところだけ。動いている印であり、募集職種は当てる部署の手がかり */
   hiring?: boolean;
   /** 募集職種で絞る (施工管理 / 情報システム / 営業 …) */
@@ -73,13 +85,18 @@ export interface CompanyRow {
   contact_email: string | null;
   hiring: number | null;
   hiring_roles: string | null;
+  representative: string | null;
+  business_evidence: string | null;
+  /** 項目ごとの取得元 URL (JSON 文字列)。後から検証するため */
+  field_sources: string | null;
 }
 
 const SELECT_COLUMNS = `
   c.corporate_number, c.name, c.corp_form, c.pref_name, c.city_name,
   c.address_full, c.post_code, c.kind, c.assignment_date,
   p.industry_code, p.industry_name, p.capital, p.employees, p.revenue,
-  p.website_url, p.contact_form_url, p.contact_email, p.hiring, p.hiring_roles
+  p.website_url, p.contact_form_url, p.contact_email, p.hiring, p.hiring_roles,
+  p.representative, p.business_evidence, p.field_sources
 `;
 
 interface BuiltWhere {
@@ -185,6 +202,9 @@ function usesProfile(filter: SearchFilter): boolean {
       filter.revenueMax !== undefined ||
       filter.hasWebsite ||
       filter.hasContactForm ||
+      filter.hasEmail ||
+      filter.reachable ||
+      filter.hasRepresentative ||
       filter.hiring ||
       filter.hiringRoles?.length,
   );
@@ -304,6 +324,14 @@ function buildWhere(filter: SearchFilter, forCount = false, indexHint = ''): Bui
   }
   if (filter.hasWebsite) clauses.push("p.website_url IS NOT NULL AND p.website_url <> ''");
   if (filter.hasContactForm) clauses.push("p.contact_form_url IS NOT NULL AND p.contact_form_url <> ''");
+  if (filter.hasEmail) clauses.push("p.contact_email IS NOT NULL AND p.contact_email <> ''");
+  if (filter.reachable) {
+    clauses.push(
+      "((p.contact_email IS NOT NULL AND p.contact_email <> '')" +
+      " OR (p.contact_form_url IS NOT NULL AND p.contact_form_url <> ''))",
+    );
+  }
+  if (filter.hasRepresentative) clauses.push("p.representative IS NOT NULL AND p.representative <> ''");
 
   return {
     from,

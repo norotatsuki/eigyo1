@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   contactUrlRejectReason,
+  emailRejectReason,
   extractFromHtml,
+  findEmail,
+  findObfuscatedEmail,
+  findRepresentative,
   findRefusal,
   findTel,
   nameFromCopyright,
@@ -181,5 +185,83 @@ describe('問い合わせ先として使ってよいか', () => {
                   <a href="/contact/">お問い合わせ</a>`;
     const e = extractFromHtml(html, 'https://example.co.jp/');
     expect(e.contactUrl).toBe('https://example.co.jp/contact/');
+  });
+});
+
+describe('宛先に使えないメールを外す', () => {
+  // 実データで拾ってしまった見本アドレス。これを宛先にすると届かない
+  it('雛形のまま公開されている見本を外す', () => {
+    expect(emailRejectReason('sample@address.com')).toBe('見本');
+    expect(emailRejectReason('test@example.com')).toBe('見本');
+    expect(emailRejectReason('info@yourdomain.jp')).toBe('見本');
+  });
+
+  it('送信専用と採用専用を外す', () => {
+    expect(emailRejectReason('noreply@kaisha.co.jp')).toBe('送信専用');
+    expect(emailRejectReason('recruit@sample-corp.co.jp')).toBe('採用専用');
+    expect(emailRejectReason('saiyo@kaisha.co.jp')).toBe('採用専用');
+  });
+
+  it('普通の問い合わせ先は通す', () => {
+    expect(emailRejectReason('info@kaisha.co.jp')).toBeNull();
+    expect(emailRejectReason('soumu@kaisha.co.jp')).toBeNull();
+    // 社名にたまたま test が入るだけの先を見本と取り違えない
+    expect(emailRejectReason('info@testing-lab.co.jp')).toBeNull();
+  });
+
+  it('見本しか無いページからは何も取らない', () => {
+    expect(findEmail('<a href="mailto:sample@address.com">連絡</a>', 'sample@address.com')).toBeNull();
+  });
+});
+
+describe('難読化して書かれたメールを読み取る', () => {
+  // 迷惑メール避けの書き方を戻すだけ。無いものを作り出してはいけない
+  it('at と dot の書き換えを戻す', () => {
+    expect(findObfuscatedEmail('info [at] kaisha.jp までご連絡ください')).toBe('info@kaisha.jp');
+    expect(findObfuscatedEmail('お問い合わせ: soumu(at)kaisha(dot)co(dot)jp')).toBe('soumu@kaisha.co.jp');
+  });
+
+  it('全角のアットマークを戻す', () => {
+    expect(findObfuscatedEmail('info＠kaisha.co.jp')).toBe('info@kaisha.co.jp');
+  });
+
+  it('数値文字参照で書かれたメールを読む', () => {
+    const text = '&#105;&#110;&#102;&#111;@kaisha.co.jp';
+    expect(findEmail('', text)).toBe('info@kaisha.co.jp');
+  });
+
+  it('難読化されていても見本なら採らない', () => {
+    expect(findObfuscatedEmail('sample [at] address.com')).toBeNull();
+  });
+
+  it('メールでないものを拾わない', () => {
+    expect(findObfuscatedEmail('営業時間 9:00 at 18:00')).toBeNull();
+  });
+});
+
+describe('代表者名を拾う', () => {
+  it('会社概要の書き方から取る', () => {
+    expect(findRepresentative('代表取締役　山田 太郎')).toBe('山田 太郎');
+    expect(findRepresentative('代表者：佐藤花子')).toBe('佐藤花子');  // 書かれていない区切りは作らない
+    expect(findRepresentative('代表取締役社長 鈴木一郎')).toBe('鈴木一郎');
+  });
+
+  it('部署や役職を人名と取り違えない', () => {
+    expect(findRepresentative('代表取締役社長室のご案内')).toBeNull();
+    expect(findRepresentative('代表取締役 挨拶')).toBeNull();
+  });
+
+  it('書かれていなければ取らない', () => {
+    expect(findRepresentative('会社概要 資本金 1000万円')).toBeNull();
+  });
+
+  // 会社概要は表なので、隣の見出しに食い込むことがある
+  it('うしろに続く見出し語を切り落とす', () => {
+    expect(findRepresentative('代表者 宇佐美浩一 設立 2015年')).toBe('宇佐美浩一');
+    expect(findRepresentative('代表取締役　田中一郎　資本金')).toBe('田中一郎');
+  });
+
+  it('見出し語しか続かないなら取らない', () => {
+    expect(findRepresentative('代表者 設立 2015年')).toBeNull();
   });
 });
