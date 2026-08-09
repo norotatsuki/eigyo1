@@ -15,7 +15,11 @@
  */
 import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { createInterface } from 'node:readline';
+import { createReadStream, createWriteStream, existsSync, rmSync, statSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import type { Db } from '../../db/index.ts';
 
 export const SOURCE = 'commoncrawl-domains';
@@ -56,13 +60,69 @@ export function hostFromLine(line: string, suffix: string): string | null {
   return unreverse(rev);
 }
 
+/**
+ * 一覧を手元に落とす。途中で切れたら続きから取り直す。
+ *
+ * 2 GB を 1 本の流れで読み切ろうとすると、途中で相手が黙って
+ * 読み取りが時間切れになる (実測: 2 億行を読んだところで ETIMEDOUT)。
+ * gzip は途中から解けないため、流したまま読み直すことができない。
+ * そこで先に手元へ落とし切る。落とす方は範囲を指定して続きから取れる。
+ *
+ * 既に全部落ちているファイルがあれば何もしない。
+ */
+export async function downloadEdition(
+  url: string,
+  destination: string,
+  options: { attempts?: number; onProgress?: (got: number, total: number) => void } = {},
+): Promise<string> {
+  const attempts = options.attempts ?? 20;
+  const head = await fetch(url, { method: 'HEAD' });
+  if (!head.ok) throw new Error(`一覧の大きさを確認できません: HTTP ${head.status}`);
+  const total = Number(head.headers.get('content-length') ?? 0);
+  if (!Number.isFinite(total) || total <= 0) throw new Error('一覧の大きさが分かりません');
+
+  await mkdir(dirname(destination), { recursive: true });
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const got = existsSync(destination) ? statSync(destination).size : 0;
+    if (got >= total) return destination;
+    options.onProgress?.(got, total);
+
+    try {
+      const res = await fetch(url, { headers: { range: `bytes=${got}-` } });
+      // 続きからを断られた場合は最初から取り直す
+      if (res.status === 200 && got > 0) {
+        rmSync(destination, { force: true });
+        continue;
+      }
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      await pipeline(
+        Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
+        createWriteStream(destination, { flags: got > 0 ? 'a' : 'w' }),
+      );
+    } catch {
+      // 切れたところまでは残っている。次の回で続きから取る
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+
+  const got = existsSync(destination) ? statSync(destination).size : 0;
+  if (got < total) throw new Error(`一覧を落とし切れません (${got} / ${total} バイト)`);
+  return destination;
+}
+
 export interface DomainDiscoverOptions {
   edition?: string;
   /** 集める接尾辞。既定は日本の会社用ドメイン */
   suffix?: string;
   /** 上限。試すときに使う */
   limit?: number;
+  /** 一覧を置く場所。既定は data/raw/ の下 */
+  cachePath?: string;
+  /** 手元に落とさず流し読みする (小さく試すとき用) */
+  stream?: boolean;
   onProgress?: (read: number, found: number, inserted: number) => void;
+  onDownload?: (got: number, total: number) => void;
 }
 
 export interface DomainDiscoverResult {
@@ -75,9 +135,12 @@ export interface DomainDiscoverResult {
 }
 
 /**
- * 一覧を流し読みしながら web_hosts に積む。
+ * 一覧を読みながら web_hosts に積む。
  *
- * ファイルは 2 GB あるので、手元には置かず流したまま絞り込む。
+ * 既定では 2 GB のファイルを手元に落としてから読む。
+ * 途中で切れても続きから取り直せるようにするためで、
+ * 落としたものはそのまま残る (2 度目からは取得しない)。
+ *
  * 何度実行しても同じ結果になる (既にある先は入れ直さない)。
  */
 export async function discoverFromDomainList(
@@ -88,11 +151,19 @@ export async function discoverFromDomainList(
   const suffix = options.suffix ?? '.co.jp';
   const url = editionUrl(edition);
 
-  const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`ドメイン一覧を取得できません: HTTP ${res.status} ${url}`);
+  let source: NodeJS.ReadableStream;
+  if (options.stream) {
+    const res = await fetch(url);
+    if (!res.ok || !res.body) throw new Error(`ドメイン一覧を取得できません: HTTP ${res.status} ${url}`);
+    source = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+  } else {
+    const path = options.cachePath ?? `data/raw/${edition}-domain-ranks.txt.gz`;
+    await downloadEdition(url, path, { onProgress: options.onDownload });
+    source = createReadStream(path);
+  }
 
   const lines = createInterface({
-    input: Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]).pipe(createGunzip()),
+    input: source.pipe(createGunzip()),
     crlfDelay: Number.POSITIVE_INFINITY,
   });
 

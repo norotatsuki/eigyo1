@@ -170,6 +170,7 @@ const options = {
   collection: { type: 'string' },
   edition: { type: 'string' },
   suffix: { type: 'string' },
+  stream: { type: 'boolean' },
   delay: { type: 'string' },
   channel: { type: 'string' },
   template: { type: 'string' },
@@ -537,11 +538,19 @@ function cmdRematch(db: Db): void {
 async function cmdDomains(db: Db, v: Values): Promise<void> {
   const edition = typeof v.edition === 'string' ? v.edition : DEFAULT_EDITION;
   const suffix = typeof v.suffix === 'string' ? v.suffix : '.co.jp';
-  console.error(`[発見] ${edition} の一覧から ${suffix} を集めます (2 GB を流し読みします)`);
+  console.error(`[発見] ${edition} の一覧から ${suffix} を集めます`);
 
   const started = Date.now();
+  let announced = -1;
   const r = await discoverFromDomainList(db, {
-    edition, suffix, limit: num(v.limit),
+    edition, suffix, limit: num(v.limit), stream: Boolean(v.stream),
+    onDownload: (got, total) => {
+      const pct = Math.floor((got / total) * 100);
+      if (pct !== announced) {
+        announced = pct;
+        console.error(`[取得] ${pct}% (${(got / 1e9).toFixed(2)} / ${(total / 1e9).toFixed(2)} GB)`);
+      }
+    },
     onProgress: (read, found, inserted) => {
       console.error(`[発見] 読み ${fmt(read)} 行 / 該当 ${fmt(found)} / 新規 ${fmt(inserted)}`);
     },
