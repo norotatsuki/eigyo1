@@ -10,7 +10,7 @@ import { invalidateMeta, loadMeta } from '../../search/meta.ts';
 import {
   contactUrlRejectReason, emailRejectReason, emptySocialLinks, extractFromHtml,
   findBusinessDescription,
-  findRepresentative, findSocialLinks, hasAnySocial, normalizeSocialLinks,
+  findProfileLinks, findRepresentative, findSocialLinks, hasAnySocial, normalizeSocialLinks,
   toText, trimmedNameVariants,
   type Extracted, type SocialKey, type SocialLinks,
 } from './extract.ts';
@@ -81,6 +81,8 @@ const PROFILE_PATHS = DETAIL_PATHS.slice(0, 6);
 
 /** 1 サイトあたりに開く下位ページの上限。相手の負担を抑える。 */
 const MAX_PAGES_PER_SITE = 6;
+/** 深く掘るときの上限。案内のリンクも辿るので少し多めに許す */
+const MAX_PAGES_DEEP = 12;
 
 export interface CrawlOptions {
   limit?: number;
@@ -98,6 +100,14 @@ export interface CrawlOptions {
   concurrency?: number;
   /** 同じ相手に続けて要求するときの間隔 (ミリ秒) */
   politeMs?: number;
+  /**
+   * 深く掘る。
+   *
+   * 決め打ちの道筋だけでなく、案内のリンクも辿る。項目が揃っても
+   * 途中で切り上げない。1 サイトあたりの往復は増えるが、
+   * 取りこぼしていた 代表者名・メール・SNS が埋まる。
+   */
+  deep?: boolean;
   onProgress?: (done: number, matched: number) => void;
 }
 
@@ -684,6 +694,8 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
   const delayMs = options.delayMs ?? 300;
   const concurrency = options.concurrency ?? 6;
   const politeMs = options.politeMs ?? 300;
+  const deep = options.deep === true;
+  const maxPages = deep ? MAX_PAGES_DEEP : MAX_PAGES_PER_SITE;
 
   /**
    * 訪ねる順。ドメイン一覧から来た先を先に回す。
@@ -818,14 +830,29 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
      * 全ページを必ず見ると 1 サイトあたり 10 往復になり、相手にも自分にも重い。
      * 欲しいものが揃った時点で切り上げる。
      */
-    for (const path of DETAIL_PATHS) {
-      if (satisfied(acc)) break;
-      if (acc.pagesFetched >= MAX_PAGES_PER_SITE) break;
+    /*
+     * 深く掘るときは、案内のリンクを先に辿る。
+     *
+     * 決め打ちの道筋はその規約を使っているサイトにしか届かない。
+     * 案内に「会社概要」と書いてあるなら、その行き先が正解である。
+     */
+    const targets = deep
+      ? [...findProfileLinks(top.body, `${origin}/`), ...DETAIL_PATHS.map((p) => `${origin}${p}`)]
+      : DETAIL_PATHS.map((p) => `${origin}${p}`);
+
+    const visited = new Set<string>([`${origin}/`]);
+    for (const target of targets) {
+      // 深く掘るときは、揃っても切り上げない (取りこぼしを埋めるのが目的)
+      if (!deep && satisfied(acc)) break;
+      if (acc.pagesFetched >= maxPages) break;
+      if (visited.has(target)) continue;
+      visited.add(target);
+
       await sleep(politeMs);
-      const page = await fetchText(`${origin}${path}`);
+      const page = await fetchText(target);
       if (!page || page.body === '') continue;
       acc.pagesFetched++;
-      absorb(acc, extractFromHtml(page.body, `${origin}${path}`), `${origin}${path}`, page.body);
+      absorb(acc, extractFromHtml(page.body, target), target, page.body);
     }
 
     let recruit: Recruit | null = null;

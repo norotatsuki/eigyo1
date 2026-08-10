@@ -26,11 +26,14 @@ export interface CompleteOptions {
   maxAttempts?: number;
   /** 収集し終えた先を、いまの抽出で訪ね直すか */
   revisit?: boolean;
+  /** 項目が欠けている先を、見るページを広げて掘り直すか */
+  deepen?: boolean;
   onStage?: (stage: string, detail: string) => void;
 }
 
 export interface CompleteResult {
   visited: number;
+  deepened: number;
   revisited: number;
   retried: number;
   qualified: number;
@@ -68,6 +71,25 @@ export function requeueStale(db: Db): number {
     .run().changes;
 }
 
+/**
+ * 項目が欠けている先を、掘り直す対象に戻す。
+ *
+ * 対象は「サイトが取れていて、法人にも紐付いているのに、
+ * メール・代表者名・SNS・事業内容のどれかが空いている先」。
+ * 何も取れていない先は掘っても出ないので含めない。
+ */
+export function requeueIncomplete(db: Db): number {
+  return db
+    .prepare(
+      `UPDATE web_hosts SET crawl_status = 'pending'
+        WHERE crawl_status = 'ok'
+          AND corporate_number IS NOT NULL
+          AND (site_email IS NULL OR site_representative IS NULL
+               OR social_links IS NULL OR site_tel IS NULL)`,
+    )
+    .run().changes;
+}
+
 export async function runToCompletion(
   db: Db,
   options: CompleteOptions = {},
@@ -78,11 +100,11 @@ export async function runToCompletion(
   const say = options.onStage ?? ((): void => {});
 
   const result: CompleteResult = {
-    visited: 0, revisited: 0, retried: 0, qualified: 0, stoppedAtTarget: false,
+    visited: 0, deepened: 0, revisited: 0, retried: 0, qualified: 0, stoppedAtTarget: false,
   };
 
   /** 未訪問が尽きるまで区切って回す。区切るのは途中経過を残すため。 */
-  const drain = async (label: string): Promise<boolean> => {
+  const drain = async (label: string, deep = false): Promise<boolean> => {
     for (;;) {
       const left = pendingCount(db);
       if (left === 0) return false;
@@ -91,6 +113,7 @@ export async function runToCompletion(
       const r = await crawlPendingHosts(db, {
         limit: batchSize,
         concurrency,
+        deep,
         ...(options.target !== undefined ? { target: options.target } : {}),
       });
       result.visited += r.visited;
@@ -140,7 +163,27 @@ export async function runToCompletion(
     if (await drain('再挑戦')) return result;
   }
 
-  // ④ 集め終えてから、手元のデータだけで直せるものを直す。
+  /*
+   * ④ 項目が欠けている先を、見るページを広げて掘り直す。
+   *
+   * 実測 (サイトが判明した 115,376 社): メール無し 76% / SNS 無し 76% /
+   * 事業内容無し 52% / 代表者無し 41%。決め打ちの道筋 (`/company/` 等) では
+   * その規約を使っていないサイトに届かないのが主な理由。
+   *
+   * ここでは案内のリンクを辿り、項目が揃っても切り上げない。
+   * 1 サイトあたりの往復は増えるが、既に取れている値は上書きしないので
+   * 失うものはない。
+   */
+  if (options.deepen === true) {
+    const targets = requeueIncomplete(db);
+    if (targets > 0) {
+      say('深掘り', `項目が欠けている ${targets.toLocaleString('ja-JP')} 件`);
+      result.deepened = targets;
+      if (await drain('深掘り', true)) return result;
+    }
+  }
+
+  // ⑤ 集め終えてから、手元のデータだけで直せるものを直す。
   //    ここはサイトを訪ねないので、何度やっても相手に負担をかけない
   say('業種', 'サイトを集めた先に業種を入れます');
   const classified = classifyAll(db, { withSiteOnly: true });

@@ -77,6 +77,7 @@ const USAGE = `
     --concurrency <数>     同時に当たる相手の数 (既定 48)
     --batch <数>           1 区切りで訪ねる件数 (既定 20000)
     --no-revisit           古い抽出のまま集めた先を訪ね直さない
+    --deepen               項目が欠けている先を、案内のリンクも辿って掘り直す
   rematch  収集済みのデータだけで突き合わせをやり直す (サイトは訪ねない)
   scrub    送ってはいけない問い合わせ先 (SNS・採用窓口など) を宛先から外す
   retry    繋がらなかった先を訪問対象に戻す (取得の仕方を直したとき)
@@ -239,6 +240,7 @@ const options = {
   target: { type: 'string' },
   batch: { type: 'string' },
   'no-revisit': { type: 'boolean' },
+  deepen: { type: 'boolean' },
   'has-representative': { type: 'boolean' },
   hiring: { type: 'boolean' },
   role: { type: 'string' },
@@ -655,7 +657,7 @@ function surviveBrokenResponses(): void {
 async function cmdComplete(db: Db, v: Values): Promise<void> {
   surviveBrokenResponses();
   const started = Date.now();
-  console.error('[完了まで] 収集 → 訪ね直し → 再挑戦 → 業種 → 再照合 → 点検 の順に回します');
+  console.error('[完了まで] 収集 → 訪ね直し → 再挑戦 → 深掘り → 業種 → 再照合 → 点検 の順に回します');
   console.error('[完了まで] 途中で止めても、次に実行すれば続きから始まります');
 
   const r = await runToCompletion(db, {
@@ -663,6 +665,7 @@ async function cmdComplete(db: Db, v: Values): Promise<void> {
     ...(num(v.concurrency) !== undefined ? { concurrency: num(v.concurrency)! } : {}),
     ...(num(v.batch) !== undefined ? { batchSize: num(v.batch)! } : {}),
     revisit: v['no-revisit'] !== true,
+    deepen: v.deepen === true,
     onStage: (stage, detail) => {
       const min = ((Date.now() - started) / 60000).toFixed(0);
       console.error(`[${stage}] ${detail} (${min} 分経過)`);
@@ -670,7 +673,10 @@ async function cmdComplete(db: Db, v: Values): Promise<void> {
   });
 
   const min = ((Date.now() - started) / 60000).toFixed(0);
-  console.log(`訪問 ${fmt(r.visited)} 件 / 再挑戦 ${fmt(r.retried)} 件 / 訪ね直し ${fmt(r.revisited)} 件 — ${min} 分`);
+  console.log(
+    `訪問 ${fmt(r.visited)} 件 / 再挑戦 ${fmt(r.retried)} 件 / 訪ね直し ${fmt(r.revisited)} 件` +
+    ` / 深掘り ${fmt(r.deepened)} 件 — ${min} 分`,
+  );
   console.log(`送れる先 ${fmt(r.qualified)} 件`);
   if (r.stoppedAtTarget) console.log('目標に到達したので止めました');
 }

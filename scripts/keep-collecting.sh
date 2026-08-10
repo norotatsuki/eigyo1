@@ -24,6 +24,8 @@ STOP=.stop-collecting
 # 再開の上限。1 区切り 2 万件なので、40 回では足りずに諦めていた。
 # 進んでいる限り止める理由はないので、十分に大きく取る
 MAX_ROUNDS=${MAX_ROUNDS:-400}
+# 項目が欠けている先を掘り直すか。粒度を上げたいときに 1 を渡す
+DEEPEN=${DEEPEN:-}
 
 pending() {
   sqlite3 "file:${DB}?mode=ro" \
@@ -44,13 +46,13 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
   left=$(pending)
   if [ "$left" = "0" ]; then
     say "未訪問がありません。仕上げ (業種・再照合・点検) を回します"
-    node --experimental-strip-types src/cli.ts complete --concurrency ${CONCURRENCY:-96} >> "$LOG" 2>&1
+    node --experimental-strip-types src/cli.ts complete --concurrency ${CONCURRENCY:-96} ${DEEPEN:+--deepen} >> "$LOG" 2>&1
     say "完了しました"
     exit 0
   fi
 
   say "${round} 回目 — 未訪問 ${left} 件"
-  node --experimental-strip-types src/cli.ts complete --concurrency ${CONCURRENCY:-96} >> "$LOG" 2>&1
+  node --experimental-strip-types src/cli.ts complete --concurrency ${CONCURRENCY:-96} ${DEEPEN:+--deepen} >> "$LOG" 2>&1
   code=$?
 
   if [ $code -eq 0 ]; then

@@ -516,6 +516,60 @@ export function findSocialLinks(html: string, representative: string | null = nu
   return found;
 }
 
+/**
+ * 会社の事実が載っていそうなページへのリンクを、案内から拾う。
+ *
+ * 決め打ちの道筋 (`/company/` 等) だけでは、その規約を使っていないサイトに
+ * 届かない。実測 (サイトが判明した 115,376 社): メール無し 76% /
+ * 代表者無し 41% / 事業内容無し 52% と、取りこぼしが大きかった。
+ *
+ * リンクの文字と行き先の両方を見る。同じ相手の中だけを辿り、
+ * 外のサイトへは出ない。
+ */
+const PROFILE_LINK_WORDS = [
+  '会社概要', '会社案内', '会社情報', '企業情報', '企業概要', '法人概要', '事業所概要',
+  '代表挨拶', '代表者挨拶', 'ご挨拶', 'トップメッセージ', '役員', '経営陣', 'スタッフ紹介',
+  '事業内容', '事業案内', '特定商取引', '特商法', 'プライバシー', '個人情報',
+  'company', 'about', 'corporate', 'profile', 'outline', 'overview', 'message',
+  'greeting', 'officer', 'staff', 'privacy', 'policy', 'tokushoho',
+];
+
+export function findProfileLinks(html: string, baseUrl: string, limit = 12): string[] {
+  let origin = '';
+  try {
+    origin = new URL(baseUrl).origin;
+  } catch {
+    return [];
+  }
+
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const m of html.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)) {
+    const href = (m[1] ?? '').trim();
+    if (href.length === 0 || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('#')) continue;
+
+    const haystack = `${href.toLowerCase()} ${toText(m[2] ?? '')}`;
+    if (!PROFILE_LINK_WORDS.some((w) => haystack.includes(w))) continue;
+
+    let url: URL;
+    try {
+      url = new URL(href, baseUrl);
+    } catch {
+      continue;
+    }
+    // 同じ相手の中だけを辿る。外のサイトに出ない
+    if (url.origin !== origin) continue;
+    if (/\.(pdf|jpe?g|png|gif|zip|xlsx?|docx?)$/i.test(url.pathname)) continue;
+    url.hash = '';
+    const full = url.toString();
+    if (seen.has(full) || full === baseUrl) continue;
+    seen.add(full);
+    found.push(full);
+    if (found.length >= limit) break;
+  }
+  return found;
+}
+
 /** タグを落として本文だけにする。 */
 export function toText(html: string): string {
   return html
