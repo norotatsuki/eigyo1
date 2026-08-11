@@ -153,3 +153,10 @@ gitleaks*.log
 /data/
 outreach.config.json
 .send-logs/
+.serve-password
+.public-url
+.keep-serving.log
+.stop-serving
+.tunnel.log
+.stop-collecting
+.keep-serving.pid
