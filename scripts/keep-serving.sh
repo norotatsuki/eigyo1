@@ -7,9 +7,11 @@
 #   ② 画面 (node serve) が落ちる                          → 見張って上げ直す
 #   ③ 上げ直すと trycloudflare の URL が変わる            → 変わったことを記録して知らせる
 #
-# ③ は仮の URL を使っている限り消せない。cloudflared に一度ログインすれば
-# 固定の名前を持つトンネルに切り替わり、URL が変わらなくなる (下の NAMED を参照)。
-# ログイン済みかどうかは毎回見にいくので、後からログインすれば自動で切り替わる。
+# ③ は仮の URL を使っている限り消せない。次の 2 つが揃うと固定の名前に変わる:
+#   ・cloudflared にログイン済み  (~/.cloudflared/cert.pem がある)
+#   ・使う名前が決まっている      (.public-hostname に書く / NAMED_HOSTNAME で渡す)
+# どちらも後から用意されうるので、見張りの輪の中で毎回見に行き、揃っていれば
+# 仮の URL のまま動いていても張り替える。手順は docs/ops/fixed-url.md。
 #
 #   使い方:  nohup bash scripts/keep-serving.sh > .keep-serving.log 2>&1 &
 #   止める:  touch .stop-serving
@@ -25,7 +27,9 @@ SERVE_LOG=.serve.log
 TUNNEL_LOG=.tunnel.log
 # 固定の名前を持つトンネル。cloudflared にログイン済みのときだけ使う
 NAMED=${NAMED_TUNNEL:-eigyo1}
-NAMED_HOST=${NAMED_HOSTNAME:-}
+# 使う名前 (例: eigyo.example.com) の置き場。launchd から起こすときは環境変数を
+# 渡しにくいので、ファイルに置けば拾えるようにする (plist を書き換えなくてよい)
+HOST_FILE=${HOST_FILE:-.public-hostname}
 # 外から叩いて確かめる間隔と、何回続けて駄目なら上げ直すか
 CHECK_EVERY=${CHECK_EVERY:-30}
 FAILS_BEFORE_RESTART=${FAILS_BEFORE_RESTART:-3}
@@ -47,6 +51,15 @@ trap 'rm -f "$LOCK"' EXIT
 serve_alive()  { pgrep -f "cli.ts serve --host 0.0.0.0 --port ${PORT}" >/dev/null 2>&1; }
 tunnel_alive() { pgrep -f "cloudflared tunnel" >/dev/null 2>&1; }
 
+# 固定の名前で開ける状態なら、その名前を返す。
+# ログインも名前も後から用意されうるので、覚え込まずに毎回見に行く。
+named_host() {
+  [ -s "$HOME/.cloudflared/cert.pem" ] || return 1
+  host=${NAMED_HOSTNAME:-$(cat "$HOST_FILE" 2>/dev/null)}
+  [ -n "$host" ] || return 1
+  printf '%s\n' "$host"
+}
+
 start_serve() {
   say "画面を起こします (0.0.0.0:${PORT}、合言葉あり)"
   EIGYO_PASSWORD="$(cat "$PW_FILE")" \
@@ -62,18 +75,16 @@ start_serve() {
 
 start_tunnel() {
   : > "$TUNNEL_LOG"
-  if [ -s "$HOME/.cloudflared/cert.pem" ]; then
-    # ログイン済み。固定の名前で開く → URL が変わらない
+  if host=$(named_host); then
+    # ログイン済みで名前も決まっている。固定の名前で開く → URL が変わらない
     cloudflared tunnel list 2>/dev/null | grep -qw "$NAMED" || cloudflared tunnel create "$NAMED" >> "$TUNNEL_LOG" 2>&1
-    if [ -n "$NAMED_HOST" ]; then
-      cloudflared tunnel route dns "$NAMED" "$NAMED_HOST" >> "$TUNNEL_LOG" 2>&1
-      nohup cloudflared tunnel run --url "http://127.0.0.1:${PORT}" "$NAMED" >> "$TUNNEL_LOG" 2>&1 &
-      printf 'https://%s\n' "$NAMED_HOST" > "$URL_FILE"
-      say "固定の外部リンク: https://${NAMED_HOST}"
-      return 0
-    fi
+    cloudflared tunnel route dns "$NAMED" "$host" >> "$TUNNEL_LOG" 2>&1
+    nohup cloudflared tunnel run --url "http://127.0.0.1:${PORT}" "$NAMED" >> "$TUNNEL_LOG" 2>&1 &
+    printf 'https://%s\n' "$host" > "$URL_FILE"
+    say "固定の外部リンク: https://${host}"
+    return 0
   fi
-  # 未ログイン。仮の URL で開く (上げ直すたびに変わる)
+  # 未ログイン、または名前が未決。仮の URL で開く (上げ直すたびに変わる)
   nohup cloudflared tunnel --url "http://127.0.0.1:${PORT}" --no-autoupdate >> "$TUNNEL_LOG" 2>&1 &
   for _ in $(seq 1 20); do
     url=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" "$TUNNEL_LOG" 2>/dev/null | head -1)
@@ -118,6 +129,16 @@ while :; do
   [ -f "$STOP" ] && { say "停止の指示を見つけました"; exit 0; }
 
   if ! serve_alive; then say "画面が落ちていました"; start_serve; fi
+
+  # 固定の名前が使えるようになったのに、まだ仮の URL で動いている → 張り替える。
+  # ここが無いと、後からログインしても仮の URL が生きている限り切り替わらない
+  if host=$(named_host) && [ "$(cat "$URL_FILE" 2>/dev/null)" != "https://$host" ]; then
+    say "固定の名前が使えるようになりました。張り替えます → https://${host}"
+    pkill -f "cloudflared tunnel" 2>/dev/null
+    sleep 3
+    start_tunnel; fails=0
+    sleep "$CHECK_EVERY"; continue
+  fi
 
   if ! tunnel_alive; then
     say "外部リンクが落ちていました"

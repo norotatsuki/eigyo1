@@ -155,6 +155,7 @@ outreach.config.json
 .send-logs/
 .serve-password
 .public-url
+.public-hostname
 .keep-serving.log
 .stop-serving
 .tunnel.log
