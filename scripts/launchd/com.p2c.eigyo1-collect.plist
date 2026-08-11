@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  収集の見張りを、ログインのたびに自動で起こす。
+
+  KeepAlive は SuccessfulExit=false にしてある。集め切って正常終了 (exit 0) したら
+  そこで終わり。ここを true にすると、終わったあとも仕上げ処理を延々と回し続け、
+  同じ相手を何度も訪ねることになる。
+
+  DEEPEN=1 … 項目が欠けている先を掘り直す (メール・代表者・SNS・電話)
+
+  導入:  launchctl load  -w ~/Library/LaunchAgents/com.p2c.eigyo1-collect.plist
+  解除:  launchctl unload -w ~/Library/LaunchAgents/com.p2c.eigyo1-collect.plist
+  一時停止: touch .stop-collecting
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.p2c.eigyo1-collect</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>scripts/keep-collecting.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key><string>/Users/norotatsuki/Dev/eigyo1</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>ThrottleInterval</key><integer>60</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>DEEPEN</key><string>1</string>
+  </dict>
+
+  <key>StandardOutPath</key><string>/Users/norotatsuki/Dev/eigyo1/.keep.log</string>
+  <key>StandardErrorPath</key><string>/Users/norotatsuki/Dev/eigyo1/.keep.log</string>
+</dict>
+</plist>

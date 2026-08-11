@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  画面と外部リンクの番人を、ログインのたびに自動で起こす。
+
+  ・RunAtLoad  … ログイン時に起こす (再起動しても人手が要らない)
+  ・KeepAlive  … 番人自身が死んだら起こし直す
+  ・caffeinate -is … 番人が動いている間、この Mac を眠らせない
+                     (眠ると外部リンクが切れて、社員側はエラーページになる)
+
+  導入:  launchctl load  -w ~/Library/LaunchAgents/com.p2c.eigyo1-serve.plist
+  解除:  launchctl unload -w ~/Library/LaunchAgents/com.p2c.eigyo1-serve.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.p2c.eigyo1-serve</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-is</string>
+    <string>/bin/bash</string>
+    <string>scripts/keep-serving.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key><string>/Users/norotatsuki/Dev/eigyo1</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>StandardOutPath</key><string>/Users/norotatsuki/Dev/eigyo1/.keep-serving.log</string>
+  <key>StandardErrorPath</key><string>/Users/norotatsuki/Dev/eigyo1/.keep-serving.log</string>
+</dict>
+</plist>
