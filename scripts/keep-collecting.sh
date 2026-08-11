@@ -19,6 +19,13 @@ DB=${DB:-data/eigyo.db}
 # 同時に当たる相手の数。相手はすべて別のサイトなので、1 社への負荷は増えない。
 # 上げられるのは 1 ページの上限を 700 KB に下げてメモリが収まったため
 CONCURRENCY=${CONCURRENCY:-96}
+# ヒープの上限。4 GB に当たって 3 回落ちていた
+# (FATAL ERROR: Reached heap limit)。この機体は 32 GB あるので広げる。
+#
+# 既に入っている NODE_OPTIONS を尊重してはいけない。環境側で 4096 が
+# 設定されており、それを引き継ぐと上限を上げたつもりで上がらない
+# (実際に一度これで素通りした)。ここは意図して上書きする
+export NODE_OPTIONS="--max-old-space-size=${HEAP_MB:-12288}"
 LOG=${LOG:-.complete.log}
 STOP=.stop-collecting
 # 再開の上限。1 区切り 2 万件なので、40 回では足りずに諦めていた。
