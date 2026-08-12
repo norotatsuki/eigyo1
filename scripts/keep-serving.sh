@@ -33,6 +33,10 @@ NAMED=${NAMED_TUNNEL:-eigyo1}
 # 使う名前 (例: eigyo.example.com) の置き場。launchd から起こすときは環境変数を
 # 渡しにくいので、ファイルに置けば拾えるようにする (plist を書き換えなくてよい)
 HOST_FILE=${HOST_FILE:-.public-hostname}
+# ダッシュボードで作ったトンネルの合図 (token)。
+# `cloudflared login` はブラウザの往復に 8 分の期限があり、取り逃すと
+# 証明書が書かれない (実際に 2 回とも失敗した)。token なら貼るだけで済む
+TOKEN_FILE=${TOKEN_FILE:-.tunnel-token}
 # 外から叩いて確かめる間隔と、何回続けて駄目なら上げ直すか
 CHECK_EVERY=${CHECK_EVERY:-30}
 FAILS_BEFORE_RESTART=${FAILS_BEFORE_RESTART:-3}
@@ -61,9 +65,10 @@ tunnel_alive() { pgrep -f "cloudflared tunnel" >/dev/null 2>&1; }
 # 固定の名前で開ける状態なら、その名前を返す。
 # ログインも名前も後から用意されうるので、覚え込まずに毎回見に行く。
 named_host() {
-  [ -s "$HOME/.cloudflared/cert.pem" ] || return 1
   host=${NAMED_HOSTNAME:-$(cat "$HOST_FILE" 2>/dev/null)}
   [ -n "$host" ] || return 1
+  # 名乗る手立てが要る。ダッシュボードの合図か、ログイン済みの証か、どちらか
+  [ -s "$TOKEN_FILE" ] || [ -s "$HOME/.cloudflared/cert.pem" ] || return 1
   printf '%s\n' "$host"
 }
 
@@ -90,10 +95,15 @@ start_serve() {
 start_tunnel() {
   : > "$TUNNEL_LOG"
   if host=$(named_host); then
-    # ログイン済みで名前も決まっている。固定の名前で開く → URL が変わらない
-    cloudflared tunnel list 2>/dev/null | grep -qw "$NAMED" || cloudflared tunnel create "$NAMED" >> "$TUNNEL_LOG" 2>&1
-    cloudflared tunnel route dns "$NAMED" "$host" >> "$TUNNEL_LOG" 2>&1
-    nohup cloudflared tunnel run --url "http://127.0.0.1:${PORT}" "$NAMED" >> "$TUNNEL_LOG" 2>&1 &
+    if [ -s "$TOKEN_FILE" ]; then
+      # ダッシュボードで作ったトンネル。どの名前をどこへ流すかは向こう側の設定に従う
+      nohup cloudflared tunnel run --token "$(cat "$TOKEN_FILE")" >> "$TUNNEL_LOG" 2>&1 &
+    else
+      # ログイン済み。こちらで名前を作って結びつける
+      cloudflared tunnel list 2>/dev/null | grep -qw "$NAMED" || cloudflared tunnel create "$NAMED" >> "$TUNNEL_LOG" 2>&1
+      cloudflared tunnel route dns "$NAMED" "$host" >> "$TUNNEL_LOG" 2>&1
+      nohup cloudflared tunnel run --url "http://127.0.0.1:${PORT}" "$NAMED" >> "$TUNNEL_LOG" 2>&1 &
+    fi
     printf 'https://%s\n' "$host" > "$URL_FILE"
     say "固定の外部リンク: https://${host}"
     return 0
