@@ -94,6 +94,50 @@ describe('findTel', () => {
   });
 });
 
+/*
+ * 採用ページは巡回で既に開いている頁だが、募集の様子しか見ずに捨てていた。
+ * ここから宛先と SNS を貰う判断が正しいことを、実際にある書き方で確かめる。
+ */
+describe('採用ページから宛先と SNS を貰う', () => {
+  const recruitHtml = `<html><body>
+    <h1>採用情報 | 株式会社北川工業</h1>
+    <p>営業職を若干名募集しています。</p>
+    <p>お問い合わせ：<a href="mailto:info@kitagawa-kogyo.co.jp">info@kitagawa-kogyo.co.jp</a></p>
+    <footer>
+      <a href="https://x.com/kitagawa_kogyo">X</a>
+      <a href="https://www.instagram.com/kitagawa_kogyo/">Instagram</a>
+    </footer>
+  </body></html>`;
+
+  it('会社の宛先が採用ページにあれば取れる', () => {
+    const r = extractFromHtml(recruitHtml, 'https://kitagawa-kogyo.co.jp/recruit/');
+    expect(r.email).toBe('info@kitagawa-kogyo.co.jp');
+  });
+
+  it('SNS も採用ページから取れる (footer に置かれがち)', () => {
+    const s = findSocialLinks(recruitHtml, null);
+    expect(hasAnySocial(s)).toBe(true);
+    expect(JSON.stringify(s)).toContain('x.com/kitagawa_kogyo');
+    expect(JSON.stringify(s)).toContain('instagram.com/kitagawa_kogyo');
+  });
+
+  it('応募窓口は語の後ろに続きが付いても弾く', () => {
+    // 実測で素通りしていたもの
+    expect(emailRejectReason('entrysheet@kitagawa-kogyo.co.jp')).toBe('採用専用');
+    expect(emailRejectReason('recruit-info@kitagawa-kogyo.co.jp')).toBe('採用専用');
+    expect(emailRejectReason('saiyo_2026@kitagawa-kogyo.co.jp')).toBe('採用専用');
+    // 語で始まっていなければ、これまでどおり通す
+    expect(emailRejectReason('info@kitagawa-kogyo.co.jp')).toBeNull();
+    expect(emailRejectReason('sales-career@kitagawa-kogyo.co.jp')).toBeNull();
+  });
+
+  it('応募窓口 (recruit@ / saiyo@) は宛先にしない', () => {
+    const onlyRecruit = `<html><body>応募は <a href="mailto:recruit@kitagawa-kogyo.co.jp">recruit@…</a> まで</body></html>`;
+    expect(extractFromHtml(onlyRecruit, 'https://kitagawa-kogyo.co.jp/recruit/').email).toBeNull();
+    expect(emailRejectReason('saiyo@kitagawa-kogyo.co.jp')).toBe('採用専用');
+  });
+});
+
 describe('extractFromHtml', () => {
   const html = `<!doctype html><html><head><title>株式会社サンプル建設｜公式</title></head>
     <body>

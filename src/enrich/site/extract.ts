@@ -67,7 +67,10 @@ const EMAIL_REJECT: ReadonlyArray<readonly [reason: string, pattern: RegExp]> = 
   // 見本かどうかは **ドメイン側** で判じる (@example. など)
   ['見本', /^(sample|example|test|dummy|hoge|foo|bar|aaa|xxx|yourname|your-?mail)@|@(example|sample|test|dummy|address|domain|yourdomain|mailaddress)\./i],
   ['送信専用', /^(noreply|no-reply|donotreply|do-not-reply|auto|automail|system|bounce|postmaster|mailer-daemon)@/i],
-  ['採用専用', /^(recruit|saiyo|saiyou|jinji|entry|career|job|kyujin)@/i],
+  // 語の後ろに続きが付く形がある。実測 (2026-08-12、採用ページ 117 件):
+  // `entrysheet@` が素通りしていた。`@` 直前までを語の続きとして許す。
+  // 語で始まっていることは変えない (`alta-career@` のような社名由来は残す)
+  ['採用専用', /^(recruit|saiyo|saiyou|jinji|entry|career|job|kyujin)[a-z0-9._-]*@/i],
   ['ファイル', /\.(png|jpe?g|gif|webp|svg|css|js|woff2?)$/i],
   ['計測', /@(sentry|wixpress|sentry\.io)/i],
 ];

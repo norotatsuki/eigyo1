@@ -160,7 +160,21 @@ function newAccumulator(): Accumulator {
  * 先に取れた値を優先する (上位のページほど確からしいため)。
  * 埋めた項目には、その値をどのページから取ったかを必ず残す。
  */
-function absorb(acc: Accumulator, more: Extracted, url: string, html: string): void {
+function absorb(
+  acc: Accumulator,
+  more: Extracted,
+  url: string,
+  html: string,
+  /**
+   * 本文を溜めるか。
+   *
+   * 溜めた本文は 業種の推定・規模の抽出・事業内容 に使う。募集要項は
+   * 会社の事業ではなく募集職種を語るため、混ぜると業種の判定が寄る
+   * (建設会社の採用ページに「エンジニア募集」とあれば IT に寄りかねない)。
+   * 宛先と SNS だけ貰って、本文は貰わない、という取り込み方を許す。
+   */
+  collectText = true,
+): void {
   for (const key of ['name', 'address', 'tel', 'email', 'contactUrl', 'refusedText'] as const) {
     if (acc.info[key] === null && more[key] !== null) {
       acc.info[key] = more[key];
@@ -168,7 +182,7 @@ function absorb(acc: Accumulator, more: Extracted, url: string, html: string): v
     }
   }
   const text = toText(html);
-  if (acc.text.length < MAX_TEXT_CHARS) {
+  if (collectText && acc.text.length < MAX_TEXT_CHARS) {
     acc.text = acc.text.length > 0 ? `${acc.text}\n${text}` : text;
     if (acc.text.length > MAX_TEXT_CHARS) acc.text = acc.text.slice(0, MAX_TEXT_CHARS);
   }
@@ -855,12 +869,26 @@ export async function crawlPendingHosts(db: Db, options: CrawlOptions = {}): Pro
       absorb(acc, extractFromHtml(page.body, target), target, page.body);
     }
 
+    /*
+     * 採用ページ。募集の様子だけを見て捨てていたが、この頁は既に開いている。
+     *
+     * 自分のコメント (上の実測 120 社) が「/recruit/ で 3 件のメールが
+     * 見つかった」と書いているのに、その 3 件を捨てていた。SNS も同じで、
+     * 採用ページは会社の X / Instagram を載せている率が高い。
+     * 往復は 1 回も増えない。応募窓口 (recruit@ / saiyo@) は
+     * emailRejectReason が弾くので、営業に使えない宛先は入らない。
+     *
+     * 本文だけは貰わない。募集職種が業種の判定に混ざるため
+     */
     let recruit: Recruit | null = null;
     const recruitUrl = findRecruitUrl(top.body, `${origin}/`);
     if (recruitUrl) {
       await sleep(politeMs);
       const page = await fetchText(recruitUrl);
-      if (page && page.body !== '') recruit = extractRecruit(toText(page.body));
+      if (page && page.body !== '') {
+        recruit = extractRecruit(toText(page.body));
+        absorb(acc, extractFromHtml(page.body, recruitUrl), recruitUrl, page.body, false);
+      }
     }
 
     // 営業お断りは問い合わせページに書かれていることが多い。見落とすと
