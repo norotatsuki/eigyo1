@@ -21,6 +21,9 @@ cd "$(dirname "$0")/.."
 
 PORT=${PORT:-5180}
 PW_FILE=${PW_FILE:-.serve-password}
+# このファイルを置くと、合言葉を要らなくして誰にでも開く。
+# 消せば合言葉ありに戻る (どちらも次の見張りで反映される)
+OPEN_FILE=${OPEN_FILE:-.public-open}
 URL_FILE=${URL_FILE:-.public-url}
 STOP=.stop-serving
 SERVE_LOG=.serve.log
@@ -46,7 +49,11 @@ fi
 printf '%s\n' "$$" > "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
-[ -s "$PW_FILE" ] || { say "合言葉のファイル ($PW_FILE) がありません。作ってから起動してください"; exit 1; }
+public_open() { [ -f "$OPEN_FILE" ]; }
+
+public_open \
+  || [ -s "$PW_FILE" ] \
+  || { say "合言葉のファイル ($PW_FILE) がありません。作ってから起動してください"; exit 1; }
 
 serve_alive()  { pgrep -f "cli.ts serve --host 0.0.0.0 --port ${PORT}" >/dev/null 2>&1; }
 tunnel_alive() { pgrep -f "cloudflared tunnel" >/dev/null 2>&1; }
@@ -61,10 +68,17 @@ named_host() {
 }
 
 start_serve() {
-  say "画面を起こします (0.0.0.0:${PORT}、合言葉あり)"
-  EIGYO_PASSWORD="$(cat "$PW_FILE")" \
-    nohup node --experimental-strip-types src/cli.ts serve --host 0.0.0.0 --port "$PORT" \
-    >> "$SERVE_LOG" 2>&1 &
+  if public_open; then
+    say "画面を起こします (0.0.0.0:${PORT}、合言葉なしで公開)"
+    EIGYO_PUBLIC=1 \
+      nohup node --experimental-strip-types src/cli.ts serve --host 0.0.0.0 --port "$PORT" \
+      >> "$SERVE_LOG" 2>&1 &
+  else
+    say "画面を起こします (0.0.0.0:${PORT}、合言葉あり)"
+    EIGYO_PASSWORD="$(cat "$PW_FILE")" \
+      nohup node --experimental-strip-types src/cli.ts serve --host 0.0.0.0 --port "$PORT" \
+      >> "$SERVE_LOG" 2>&1 &
+  fi
   # 集計の作り直しに 1〜2 分かかる。応答するまで待つ
   for _ in $(seq 1 40); do
     curl -s -o /dev/null --max-time 3 "http://127.0.0.1:${PORT}/" && return 0
@@ -105,6 +119,16 @@ start_tunnel() {
   say "外部リンクを取れませんでした ($TUNNEL_LOG を見てください)"
 }
 
+# 起動済みの画面が、今の公開の仕方と合っているか。
+# 合言葉ありで起こした画面は、あとで OPEN_FILE を置いても自分では変わらない。
+# 手元に直接聞いて食い違いを見つける (302 = 入室画面へ誘導 = 合言葉あり)
+serve_mode_matches() {
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${PORT}/" 2>/dev/null)
+  # 応答が無いときは判断しない。落ちているなら serve_alive の側が起こし直す
+  [ "$code" = "302" ] || [ "$code" = "200" ] || return 0
+  if public_open; then [ "$code" = "200" ]; else [ "$code" = "302" ]; fi
+}
+
 reachable() {
   url=$(cat "$URL_FILE" 2>/dev/null) || return 1
   [ -n "$url" ] || return 1
@@ -128,7 +152,15 @@ fails=0
 while :; do
   [ -f "$STOP" ] && { say "停止の指示を見つけました"; exit 0; }
 
-  if ! serve_alive; then say "画面が落ちていました"; start_serve; fi
+  if ! serve_alive; then
+    say "画面が落ちていました"
+    start_serve
+  elif ! serve_mode_matches; then
+    say "公開の仕方が変わっています。画面を起こし直します"
+    pkill -f "cli.ts serve --host 0.0.0.0 --port ${PORT}" 2>/dev/null
+    sleep 2
+    start_serve
+  fi
 
   # 固定の名前が使えるようになったのに、まだ仮の URL で動いている → 張り替える。
   # ここが無いと、後からログインしても仮の URL が生きている限り切り替わらない

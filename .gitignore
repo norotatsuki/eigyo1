@@ -161,3 +161,4 @@ outreach.config.json
 .tunnel.log
 .stop-collecting
 .keep-serving.pid
+.public-open

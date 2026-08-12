@@ -310,6 +310,13 @@ export interface ServeOptions {
   host?: string;
   /** 合言葉。手元以外に開くときは必須 */
   password?: string | null;
+  /**
+   * 合言葉を要らなくして、誰にでも開く。既定は false。
+   *
+   * 事故で立つことがないよう、呼び出し側が明示したときだけ true になる。
+   * 「合言葉を空にしたら開いた」では、消し忘れがそのまま公開になる。
+   */
+  open?: boolean;
   onListen?: (url: string) => void;
 }
 
@@ -317,6 +324,7 @@ export interface ServeOptions {
 export function serve(db: Db, options: ServeOptions = {}) {
   const host = options.host ?? DEFAULT_HOST;
   const password = options.password ?? null;
+  const open = options.open === true;
 
   /*
    * 外に開くなら合言葉を必ず要る形にする。
@@ -324,15 +332,20 @@ export function serve(db: Db, options: ServeOptions = {}) {
    * 手元だけなら要らないが、他の端末から届く形にした瞬間、
    * 500 万社の情報とメールアドレス・代表者名が誰でも見られる状態になる。
    * 「あとで付ける」を許すと、付け忘れたまま開き続けることになる。
+   *
+   * open を渡したときだけ、この要求を外して誰にでも開く。持ち主が承知の上で
+   * 選ぶ道として残すが、既定にはしない。合言葉が空だから開く、ではなく、
+   * 開くと書いたから開く。消し忘れが公開に化けない形にしておく。
    */
-  if (!isLoopback(host) && (password === null || password.length < 8)) {
+  if (!isLoopback(host) && !open && (password === null || password.length < 8)) {
     throw new Error(
       `${host} で待ち受けるには合言葉が要ります (8 文字以上)。\n` +
       '  --password <合言葉> か 環境変数 EIGYO_PASSWORD で渡してください。\n' +
-      '  合言葉なしで開くと、500 万社の情報と連絡先が誰でも見られる状態になります。',
+      '  合言葉なしで開くと、500 万社の情報と連絡先が誰でも見られる状態になります。\n' +
+      '  承知の上で開くなら --open (または EIGYO_PUBLIC=1) を渡してください。',
     );
   }
-  const auth = createAuth(password, !isLoopback(host));
+  const auth = createAuth(password, !isLoopback(host) && !open);
 
   const meta = loadMeta(db, {
     onCompute: () => console.error('[画面] 選択肢の集計を作ります (初回のみ 1 分ほど)…'),

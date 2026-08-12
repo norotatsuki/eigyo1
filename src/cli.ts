@@ -197,6 +197,7 @@ const options = {
   'with-site': { type: 'boolean' },
   host: { type: 'string' },
   password: { type: 'string' },
+  open: { type: 'boolean' },
   delay: { type: 'string' },
   channel: { type: 'string' },
   template: { type: 'string' },
@@ -368,12 +369,18 @@ function cmdServe(db: Db, v: Values): Promise<void> {
   const host = typeof v.host === 'string' ? v.host : '127.0.0.1';
   const password = typeof v.password === 'string' ? v.password : (process.env.EIGYO_PASSWORD ?? null);
   const openToNetwork = host !== '127.0.0.1' && host !== 'localhost';
+  // 合言葉を外して誰にでも開く。事故で立たないよう、明示したときだけ
+  const open = v.open === true || process.env.EIGYO_PUBLIC === '1';
 
   return new Promise<void>((resolve) => {
     const server = serve(db, {
-      port, host, password,
+      port, host, password, open,
       onListen: (url) => {
-        if (openToNetwork) {
+        if (openToNetwork && open) {
+          console.error(`[画面] ${url} で待ち受けます`);
+          console.error('[画面] 合言葉なしで公開しています。URL を知っている人は誰でも');
+          console.error('[画面]   500 万社の連絡先と代表者名を見られます (書き出しも可)');
+        } else if (openToNetwork) {
           console.error(`[画面] ${url} で待ち受けます (合言葉が要ります)`);
           for (const addr of localAddresses()) {
             console.error(`[画面]   同じネットワークからは http://${addr}:${port}/`);
