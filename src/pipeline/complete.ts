@@ -75,8 +75,15 @@ export function requeueStale(db: Db): number {
  * 項目が欠けている先を、掘り直す対象に戻す。
  *
  * 対象は「サイトが取れていて、法人にも紐付いているのに、
- * メール・代表者名・SNS・事業内容のどれかが空いている先」。
+ * メール・問い合わせフォーム・代表者名・SNS・電話のどれかが空いている先」。
  * 何も取れていない先は掘っても出ないので含めない。
+ *
+ * 問い合わせフォーム (contact_url) は後から足した。実測 (2026-08-12、深掘りの
+ * 途中で残っていた 5,689 件): 他の 4 項目が揃っていてフォームだけ無い先が
+ * 656 件 (11.5%) あり、条件に無いため一度も掘り直されずに残っていた。
+ * 送り先はメールとフォームの 2 経路しかなく、実際に持っている数はフォームが
+ * 101,244 件 / メールが 30,415 件。フォームの方が 3 倍多い経路を、
+ * 掘り直しの条件から外していた。
  */
 export function requeueIncomplete(db: Db): number {
   return db
@@ -85,7 +92,8 @@ export function requeueIncomplete(db: Db): number {
         WHERE crawl_status = 'ok'
           AND corporate_number IS NOT NULL
           AND (site_email IS NULL OR site_representative IS NULL
-               OR social_links IS NULL OR site_tel IS NULL)`,
+               OR social_links IS NULL OR site_tel IS NULL
+               OR contact_url IS NULL)`,
     )
     .run().changes;
 }

@@ -6,7 +6,8 @@
   そこで終わり。ここを true にすると、終わったあとも仕上げ処理を延々と回し続け、
   同じ相手を何度も訪ねることになる。
 
-  DEEPEN=1 … 項目が欠けている先を掘り直す (メール・代表者・SNS・電話)
+  DEEPEN=1 … 項目が欠けている先を掘り直す
+             (メール・問い合わせフォーム・代表者・SNS・電話)
 
   導入:  launchctl load  -w ~/Library/LaunchAgents/com.p2c.eigyo1-collect.plist
   解除:  launchctl unload -w ~/Library/LaunchAgents/com.p2c.eigyo1-collect.plist
