@@ -163,3 +163,5 @@ outreach.config.json
 .keep-serving.pid
 .public-open
 .tunnel-token
+.backup.log
+.r2-credentials

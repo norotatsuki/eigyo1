@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DB の控えを毎晩 1 本取り、この端末の外へ出す。
+
+  ・毎日 4:00 に走る (収集の負荷が軽い時間帯)
+  ・眠っていて走れなかったときは、起きた直後に走る (RunAtLoad ではなく
+    StartCalendarInterval の取りこぼし補償を launchd が持っている)
+  ・KeepAlive は付けない。1 回走れば終わる仕事で、失敗しても翌日また走る
+
+  導入:  launchctl load  -w ~/Library/LaunchAgents/com.p2c.eigyo1-backup.plist
+  解除:  launchctl unload -w ~/Library/LaunchAgents/com.p2c.eigyo1-backup.plist
+  今すぐ試す: launchctl kickstart -k gui/$(id -u)/com.p2c.eigyo1-backup
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.p2c.eigyo1-backup</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>scripts/backup-db.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key><string>/Users/norotatsuki/Dev/eigyo1</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>StandardOutPath</key><string>/Users/norotatsuki/Dev/eigyo1/.backup.log</string>
+  <key>StandardErrorPath</key><string>/Users/norotatsuki/Dev/eigyo1/.backup.log</string>
+</dict>
+</plist>
