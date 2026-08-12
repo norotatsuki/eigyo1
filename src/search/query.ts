@@ -517,14 +517,25 @@ export function breakdown(db: Db, filter: SearchFilter, dimension: Dimension): S
    * 「201」は 42 の都道府県に存在するため、コードだけで束ねると
    * 鳥取市と札幌市中央区が同じ塊になる (実際になった)。必ず県と組で見る。
    */
-  const group: Record<'city' | 'pref' | 'industry', { key: string; label: string; notNull: string }> = {
+  /*
+   * `present` は「空でない」。IS NOT NULL だけでは足りない。
+   *
+   * 実測 (2026-08-13): 都道府県の内訳が 48 区分になっていた。48 番目は
+   * ラベルも id も空で 9,585 社。pref_code が NULL ではなく **空文字** の
+   * 行があり、NULL の判定をすり抜けて、画面に押せない空行として出ていた。
+   */
+  const group: Record<'city' | 'pref' | 'industry', { key: string; label: string; present: string }> = {
     city: {
       key: 'c.pref_code || c.city_code',
       label: 'c.pref_name || c.city_name',
-      notNull: 'c.city_code IS NOT NULL',
+      present: "c.city_code IS NOT NULL AND c.city_code <> ''",
     },
-    pref: { key: 'c.pref_code', label: 'c.pref_name', notNull: 'c.pref_code IS NOT NULL' },
-    industry: { key: 'p.industry_code', label: 'p.industry_name', notNull: 'p.industry_code IS NOT NULL' },
+    pref: { key: 'c.pref_code', label: 'c.pref_name', present: "c.pref_code IS NOT NULL AND c.pref_code <> ''" },
+    industry: {
+      key: 'p.industry_code',
+      label: 'p.industry_name',
+      present: "p.industry_code IS NOT NULL AND p.industry_code <> ''",
+    },
   };
   const g = group[dimension as 'city' | 'pref' | 'industry'];
   // 別名を `id` にしてはいけない。corporations には id 列があり、
@@ -532,7 +543,7 @@ export function breakdown(db: Db, filter: SearchFilter, dimension: Dimension): S
   const rows = db
     .prepare(
       `SELECT ${g.key} AS slice_id, ${g.label} AS slice_label, COUNT(*) AS n
-       ${where.from} ${where.sql} AND ${g.notNull}
+       ${where.from} ${where.sql} AND ${g.present}
         GROUP BY ${g.key} ORDER BY n DESC LIMIT 60`,
     )
     .all(...where.params) as Array<{ slice_id: string; slice_label: string; n: number }>;

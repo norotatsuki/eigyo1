@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openDb, rebuildFts, type Db } from '../../src/db/index.ts';
 import {
+  breakdown,
   buildSelectSql,
   countCompanies,
   prefixUpperBound,
@@ -280,5 +281,63 @@ describe('絞り込み検索', () => {
     insert(db, { number: '1000000000006', name: '株式会社A,B', prefCode: '40' });
     const lines = [...toCsvLines(searchCompanies(db, { prefCodes: ['40'] }))];
     expect(lines[1]).toContain('"株式会社A,B"');
+  });
+});
+
+/*
+ * 内訳 (セグメントの切り口)。
+ *
+ * 実測 (2026-08-13、本番の 500 万社): 都道府県の内訳が 48 区分あった。
+ * 48 番目は id もラベルも空で 9,585 社。pref_code が NULL ではなく
+ * **空文字** の行が NULL の判定をすり抜け、押せない空行として出ていた。
+ */
+describe('内訳の切り口', () => {
+  /** 県名・市名まで入れて 1 件置く (共有の insert は名称を空で入れるため) */
+  function place(db: Db, number: string, name: string, prefCode: string, prefName: string,
+                 cityCode: string, cityName: string): void {
+    db.prepare(
+      `INSERT INTO corporations (
+         corporate_number, name, kind, pref_name, city_name, street_number,
+         pref_code, city_code, post_code, latest, search_excluded, assignment_date,
+         name_normalized, name_core, corp_form, address_full, is_active,
+         source_date, ingested_at
+       ) VALUES (?, ?, 301, ?, ?, '', ?, ?, '', 1, 0, '2015-10-05', ?, ?, '株式会社', '', 1,
+                 '2026-07-31', 'now')`,
+    ).run(number, name, prefName, cityName, prefCode, cityCode, name, name);
+  }
+
+  let db: Db;
+  beforeEach(() => {
+    db = openDb(':memory:');
+    place(db, '1000000000001', '株式会社東京', '13', '東京都', '103', '港区');
+    place(db, '1000000000002', '株式会社大阪', '27', '大阪府', '100', '大阪市');
+    // 住所に都道府県が入っていない行 (空文字であって NULL ではない)
+    place(db, '1000000000003', '株式会社不明', '', '', '', '');
+    rebuildFts(db);
+  });
+
+  it('都道府県で切れる', () => {
+    const slices = breakdown(db, {}, 'pref');
+    expect(slices.map((s) => s.label).sort()).toEqual(['大阪府', '東京都']);
+  });
+
+  it('空文字の都道府県を区分として出さない (押せない空行になる)', () => {
+    const slices = breakdown(db, {}, 'pref');
+    expect(slices).toHaveLength(2);
+    expect(slices.some((s) => s.id === '' || s.label === '')).toBe(false);
+  });
+
+  it('市区町村でも空文字を区分にしない', () => {
+    const slices = breakdown(db, {}, 'city');
+    expect(slices).toHaveLength(2);
+    expect(slices.some((s) => s.id === '' || s.label === '')).toBe(false);
+  });
+
+  it('業種でも空文字を区分にしない', () => {
+    setProfile(db, '1000000000001', { industry_code: '39', industry_name: '情報サービス業' });
+    setProfile(db, '1000000000002', { industry_code: '', industry_name: '' });
+    const slices = breakdown(db, {}, 'industry');
+    expect(slices).toHaveLength(1);
+    expect(slices[0]?.label).toBe('情報サービス業');
   });
 });

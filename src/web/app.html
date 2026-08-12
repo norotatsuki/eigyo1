@@ -549,11 +549,14 @@ function renderRows(rows) {
  * 一覧より重いことがあるので、一覧とは別に投げて後から埋める。
  */
 const SEGMENT_VIEWS = [
+  { dimension: 'industry', title: '業種', control: null },
+  // 都道府県は絞り込みには前からあったが、内訳には出していなかった。
+  // 「どの県に何社いるか」を見てから狙いを決められるようにする
+  { dimension: 'pref', title: '都道府県', control: null },
+  { dimension: 'city', title: '市区町村', control: null },
+  { dimension: 'capital', title: '資本金 (実測のみ)', control: 'capitalBand' },
   { dimension: 'employees', title: '従業員数', control: 'employeeBand' },
   { dimension: 'revenue', title: '年商 (推定含む)', control: 'revenueBand' },
-  { dimension: 'capital', title: '資本金 (実測のみ)', control: 'capitalBand' },
-  { dimension: 'city', title: '市区町村', control: null },
-  { dimension: 'industry', title: '業種', control: null },
 ];
 
 let segGeneration = 0;
@@ -607,6 +610,12 @@ function applySegment(view, slice) {
     // 帯は左の一覧の印を切り替える。画面の状態を 1 か所に保つため
     const cb = document.querySelector('#' + view.control + ' input[value="' + slice.id + '"]');
     if (cb) { cb.checked = !cb.checked; schedule(); return; }
+  }
+  if (view.dimension === 'pref') {
+    const cb = document.querySelector('#pref input[value="' + slice.id + '"]');
+    // 都道府県を切り替えたら、市区町村の一覧も入れ替える必要がある。
+    // change を送らずに checked だけ変えると、前の県の市区町村が残る
+    if (cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change', { bubbles: true })); schedule(); return; }
   }
   if (view.dimension === 'city') {
     const cb = document.querySelector('#city input[value="' + slice.id + '"]');
