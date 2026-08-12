@@ -115,6 +115,8 @@ start_tunnel() {
     if [ -n "$url" ]; then
       [ "$(cat "$URL_FILE" 2>/dev/null)" = "$url" ] || say "外部リンクが変わりました → $url"
       printf '%s\n' "$url" > "$URL_FILE"
+      # 変わらない入口の行き先を入れ替える。配る URL はこちらだけで済む
+      bash scripts/publish-link.sh 2>&1 | while read -r l; do say "$l"; done
       # 名前が行き渡るまで 30〜60 秒かかる。ここを待たずに見張りへ入ると、
       # 「届かない」と誤判定して張り直し、URL が変わり続ける
       for _ in $(seq 1 30); do
