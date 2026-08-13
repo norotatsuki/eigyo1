@@ -115,10 +115,31 @@ export function filterFromParams(q: URLSearchParams): SearchFilter {
   // 業種が未推定の 430 万社が黙って消えて「営業対象 500 万社」と食い違う
   const conf = num('industryConfidence');
   if (conf !== undefined && industry) filter.industryMinConfidence = conf;
-  const capitalMin = num('capitalMin');
-  if (capitalMin !== undefined) filter.capitalMin = capitalMin;
-  const employeesMin = num('employeesMin');
-  if (employeesMin !== undefined) filter.employeesMin = employeesMin;
+  /*
+   * 上限と下限は必ず対で読む。
+   *
+   * 下限だけ読んで上限を落としていた。範囲を指定したつもりの利用者には
+   * 「下限だけ効いた結果」が返る。実測 (2026-08-13):
+   *   capitalMin=1000万 & capitalMax=5000万 で引くと、資本金 5 億 2705 万の
+   *   会社が返っていた (300 件中 87 件が上限超え)。
+   *
+   * 黙って落とすのは、間違った絞り込み結果をそのまま渡すことになる。
+   * SQL 側 (buildWhere) は最初から全部に対応していて、ここだけが抜けていた。
+   */
+  for (const [key, set] of [
+    ['capitalMin', (v: number) => (filter.capitalMin = v)],
+    ['capitalMax', (v: number) => (filter.capitalMax = v)],
+    ['employeesMin', (v: number) => (filter.employeesMin = v)],
+    ['employeesMax', (v: number) => (filter.employeesMax = v)],
+    ['revenueMin', (v: number) => (filter.revenueMin = v)],
+    ['revenueMax', (v: number) => (filter.revenueMax = v)],
+  ] as const) {
+    const v = num(key);
+    if (v !== undefined) set(v);
+  }
+  if (q.get('hiring') === '1') filter.hiring = true;
+  const hiringRoles = list('hiringRole');
+  if (hiringRoles) filter.hiringRoles = hiringRoles;
   const assignedFrom = q.get('assignedFrom')?.trim();
   if (assignedFrom) filter.assignedFrom = assignedFrom;
   const assignedTo = q.get('assignedTo')?.trim();
