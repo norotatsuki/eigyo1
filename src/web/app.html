@@ -141,6 +141,15 @@
   }
   tr.sources > td { background: #fafaf7; white-space: normal; padding: 10px 14px; }
 
+  /*
+   * 数が多いときは字を詰める。50 件ずつ捲らせるのではなく、該当を
+   * 全部並べることを優先する (そのまま CSV に出すのが狙いのため)。
+   */
+  table.dense { font-size: 11px; }
+  table.dense th, table.dense td { padding: 3px 8px; }
+  table.dense td.clip { max-width: 240px; }
+  table.dense td.addr { max-width: 200px; }
+
   /* 数を見てから狙いを決めるための内訳。押すとその条件が絞り込みに入る */
   .segments {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px;
@@ -312,9 +321,8 @@
     </div>
 
     <div class="pager">
-      <button class="ghost" id="prev">前へ</button>
-      <button class="ghost" id="next">次へ</button>
       <span id="range"></span>
+      <button class="ghost" id="loadMore" hidden>続きを読む</button>
     </div>
   </main>
 </div>
@@ -322,8 +330,21 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => n.toLocaleString('ja-JP');
-const LIMIT = 50;
-let offset = 0;
+/*
+ * 一覧は 50 件ずつ捲らせない。条件に合う先を全部並べる。
+ *
+ * 狙いは「この条件の会社をまとめて CSV に出す」ことなので、
+ * 50 件ずつ見せる形は用を成さない (京都・ホテル・メールあり を
+ * 50 社ずつ捲るのではなく、該当を全部見たい)。
+ *
+ * ただし 100 万件を画面に並べると、どの端末でも固まる。並べるのは
+ * MAX_ROWS まで。CSV は画面の上限と関係なく、絞り込み全件を出す。
+ */
+const CHUNK = 500;       // 1 回の要求で取る数 (サーバ側の上限と同じ)
+const MAX_ROWS = 20000;  // 画面に並べる上限
+let loaded = 0;
+let loading = false;
+let currentParams = '';
 let lastTotal = 0;
 let timer = null;
 
@@ -531,13 +552,19 @@ function rowFor(r) {
   return [tr, srcRow];
 }
 
-function renderRows(rows) {
+function appendRows(rows, first) {
   const tbody = $('rows');
-  if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="15" class="empty">条件に合う法人がありません</td></tr>';
-    return;
+  if (first) {
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="15" class="empty">条件に合う法人がありません</td></tr>';
+      return;
+    }
+    tbody.replaceChildren(...rows.flatMap(rowFor));
+  } else if (rows.length > 0) {
+    tbody.append(...rows.flatMap(rowFor));
   }
-  tbody.replaceChildren(...rows.flatMap(rowFor));
+  // 並べる数が多いときは字を詰める。捲らせずに並べ切ることを優先する
+  tbody.closest('table')?.classList.toggle('dense', tbody.rows.length > 200);
 }
 
 /**
@@ -629,8 +656,17 @@ function applySegment(view, slice) {
   }
 }
 
-async function refreshSegments(params) {
-  const mine = ++segGeneration;
+/**
+ * 内訳の枠だけを置き、数えるのは押されたときにする。
+ *
+ * 以前は条件が変わるたびに 6 本まとめて投げていた。実測 (絞り込みなし)
+ * 業種 120.9s / 都道府県 22.9s / 市区町村 23.6s / 資本金 19.5s /
+ * 従業員数 19.9s / 年商 26.0s ―― 合計 233 秒。DB の呼び出しは同期で、
+ * サーバは 1 本の流れしか持たないので、その間 一覧も件数も止まっていた。
+ * 見たい切り口だけ数えれば、待つのは 1 本ぶんで済む。
+ */
+function resetSegments() {
+  ++segGeneration;
   const box = $('segments');
   box.hidden = false;
   box.replaceChildren(...SEGMENT_VIEWS.map((v) => {
@@ -638,70 +674,102 @@ async function refreshSegments(params) {
     p.className = 'seg';
     const h = document.createElement('h3');
     h.textContent = v.title;
-    p.append(h, none('集計中…'));
+    const b = document.createElement('button');
+    b.className = 'ghost';
+    b.textContent = '数える';
+    b.addEventListener('click', () => { void countSegment(v, p, b); });
+    p.append(h, b);
     return p;
   }));
-
-  // 切り口ごとに別々に投げ、届いた順に差し替える。1 つ遅くても他を待たせない
-  SEGMENT_VIEWS.forEach((view, i) => {
-    const q = new URLSearchParams(params);
-    q.set('dimension', view.dimension);
-    fetch('/api/breakdown?' + q)
-      .then((r) => r.json())
-      .then((data) => {
-        if (mine !== segGeneration) return;
-        const panel = segmentPanel(view, data.slices || []);
-        box.children[i]?.replaceWith(panel);
-      })
-      .catch(() => {
-        if (mine !== segGeneration) return;
-        const p = document.createElement('div');
-        p.className = 'seg';
-        const h = document.createElement('h3');
-        h.textContent = view.title;
-        p.append(h, none('集計できませんでした'));
-        box.children[i]?.replaceWith(p);
-      });
-  });
 }
+
+async function countSegment(view, panel, button) {
+  const mine = segGeneration;
+  button.disabled = true;
+  button.textContent = '集計中…';
+  try {
+    const q = new URLSearchParams(currentParams);
+    q.set('dimension', view.dimension);
+    const data = await (await fetch('/api/breakdown?' + q)).json();
+    if (mine !== segGeneration) return;
+    const fresh = segmentPanel(view, data.slices || []);
+    panel.replaceWith(fresh);
+  } catch {
+    button.disabled = false;
+    button.textContent = '数える (やり直す)';
+  }
+}
+
 
 // 件数の集計は数秒かかることがある。一覧を待たせないよう別々に投げ、
 // 後から届いた方が古い条件のものなら捨てる。
 let generation = 0;
 
+/** 1 かたまり取って並べる。まだ続きがあるなら true。 */
+async function loadChunk(mine, first) {
+  if (loading) return false;
+  loading = true;
+  try {
+    const q = new URLSearchParams(currentParams);
+    q.set('limit', String(CHUNK));
+    q.set('offset', String(loaded));
+    const data = await (await fetch('/api/search?' + q)).json();
+    if (mine !== generation) return false;
+    appendRows(data.rows, first);
+    loaded += data.rows.length;
+    $('elapsed').textContent = data.elapsedMs + ' ms';
+    updateRange();
+    return data.rows.length === CHUNK;
+  } catch {
+    return false;
+  } finally {
+    loading = false;
+  }
+}
+
+/** 上限に当たるか、尽きるまで読み続ける。 */
+async function loadAll(mine) {
+  while (mine === generation && loaded < MAX_ROWS) {
+    if (!(await loadChunk(mine, false))) break;
+  }
+  if (mine === generation) {
+    $('loadMore').hidden = !(loaded >= MAX_ROWS && loaded < lastTotal);
+    updateRange();
+  }
+}
+
+function updateRange() {
+  const capped = loaded >= MAX_ROWS && lastTotal > loaded;
+  $('range').textContent = loaded === 0
+    ? ''
+    : capped
+      ? fmt(loaded) + ' 件を表示中 (画面の上限)。CSV は該当 ' + fmt(lastTotal) + ' 件すべてを出します'
+      : fmt(loaded) + ' 件をすべて表示中';
+}
+
 async function run() {
   const mine = ++generation;
-  const p = buildParams();
-  const listParams = new URLSearchParams(p);
-  listParams.set('limit', String(LIMIT));
-  listParams.set('offset', String(offset));
-
+  currentParams = buildParams();
+  loaded = 0;
+  $('loadMore').hidden = true;
   $('elapsed').textContent = '検索中…';
   $('count').textContent = '…';
 
-  fetch('/api/search?' + listParams).then((r) => r.json()).then((data) => {
-    if (mine !== generation) return;
-    renderRows(data.rows);
-    $('elapsed').textContent = data.elapsedMs + ' ms';
-    $('prev').disabled = offset === 0;
-    $('next').disabled = data.rows.length < LIMIT;
-    $('range').textContent = data.rows.length > 0
-      ? fmt(offset + 1) + '–' + fmt(offset + data.rows.length) + ' 件目'
-      : '';
-  });
-
-  void refreshSegments(p);
-
-  fetch('/api/count?' + p).then((r) => r.json()).then((data) => {
+  fetch('/api/count?' + currentParams).then((r) => r.json()).then((data) => {
     if (mine !== generation) return;
     lastTotal = data.total;
     $('count').textContent = fmt(data.total);
-    if (offset + LIMIT >= data.total) $('next').disabled = true;
+    updateRange();
   });
+
+  // 内訳は重い (絞り込みが緩いと 1 本で 2 分かかる)。開いた瞬間に 6 本
+  // 投げると、その間 一覧まで止まる。見たいと言われたときだけ数える
+  resetSegments();
+
+  if (await loadChunk(mine, true)) void loadAll(mine);
 }
 
 function schedule() {
-  offset = 0;
   clearTimeout(timer);
   timer = setTimeout(run, 250);
 }
@@ -854,8 +922,18 @@ async function boot() {
                     'hasWebsite', 'includeInactive', 'includeRefused']) {
     $(id).addEventListener('change', schedule);
   }
-  $('prev').addEventListener('click', () => { offset = Math.max(0, offset - LIMIT); run(); });
-  $('next').addEventListener('click', () => { offset += LIMIT; run(); });
+  // 画面の上限まで並べた後、それでも続きを見たいとき
+  $('loadMore').addEventListener('click', () => {
+    const mine = generation;
+    $('loadMore').hidden = true;
+    void (async () => {
+      const until = loaded + MAX_ROWS;
+      while (mine === generation && loaded < until) {
+        if (!(await loadChunk(mine, false))) break;
+      }
+      if (mine === generation) $('loadMore').hidden = loaded >= lastTotal;
+    })();
+  });
   const doExport = (labels) => {
     if (lastTotal > 200000 && !confirm(fmt(lastTotal) + ' 件を書き出します。よろしいですか？')) return;
     const p = buildParams();

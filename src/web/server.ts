@@ -32,6 +32,39 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** 既定は手元だけ。外に開くのは明示したときに限る */
 const DEFAULT_HOST = '127.0.0.1';
 
+/*
+ * 同じ問いを数え直さない。
+ *
+ * 内訳と件数は 500 万行を数えるため、条件が緩いと非常に重い。
+ * 実測 (2026-08-13、絞り込みなし):
+ *   業種 120.9s / 都道府県 22.9s / 市区町村 23.6s / 資本金 19.5s /
+ *   従業員数 19.9s / 年商 26.0s   ―― 合計 233 秒
+ *
+ * さらに DB の呼び出しは同期で動き、このサーバは 1 本の流れしか持たない。
+ * つまり重い集計が走っている間、一覧も件数も **全部止まる**。
+ * 画面を開き直すたびに同じ問いを投げ直していたのが遅さの正体だった。
+ *
+ * 収集は動き続けているので答えは少しずつ古くなる。5 分で捨てる。
+ * 数えている最中に同じ問いが来たら、その約束を使い回す (二重に数えない)。
+ */
+const REMEMBER_MS = 5 * 60 * 1000;
+const REMEMBER_MAX = 300;
+const memo = new Map<string, { at: number; value: unknown }>();
+
+function remember<T>(key: string, compute: () => T): T {
+  const hit = memo.get(key);
+  if (hit && Date.now() - hit.at < REMEMBER_MS) return hit.value as T;
+  const value = compute();
+  memo.set(key, { at: Date.now(), value });
+  // 古いものから捨てる (Map は入れた順を保つ)
+  while (memo.size > REMEMBER_MAX) {
+    const oldest = memo.keys().next().value;
+    if (oldest === undefined) break;
+    memo.delete(oldest);
+  }
+  return value;
+}
+
 /** 検索条件を要求の問い合わせ文字列から組み立てる。 */
 export function filterFromParams(q: URLSearchParams): SearchFilter {
   const filter: SearchFilter = {
@@ -233,7 +266,7 @@ function handle(db: Db, meta: Meta, auth: Auth, req: IncomingMessage, res: Serve
    * いまの条件のまま、切り口ごとの件数を返す。
    *
    * 数を見てから狙いを決められるようにするためのもの。
-   * 一覧より重いことがあるので、画面側は別々に投げて後から埋める。
+   * 一覧より重いので、画面側は「見たいと言われたときだけ」投げる。
    */
   if (url.pathname === '/api/breakdown') {
     const dimension = q.get('dimension') ?? 'employees';
@@ -243,14 +276,15 @@ function handle(db: Db, meta: Meta, auth: Auth, req: IncomingMessage, res: Serve
       return;
     }
     const started = Date.now();
-    const slices = breakdown(db, filterFromParams(q), dimension as (typeof allowed)[number]);
+    const slices = remember(`b:${dimension}:${q.toString()}`, () =>
+      breakdown(db, filterFromParams(q), dimension as (typeof allowed)[number]));
     sendJson(res, 200, { dimension, slices, elapsedMs: Date.now() - started });
     return;
   }
 
   if (url.pathname === '/api/count') {
     const started = Date.now();
-    const total = countCompanies(db, filterFromParams(q));
+    const total = remember(`c:${q.toString()}`, () => countCompanies(db, filterFromParams(q)));
     sendJson(res, 200, { total, elapsedMs: Date.now() - started });
     return;
   }
