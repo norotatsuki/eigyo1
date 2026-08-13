@@ -55,7 +55,11 @@ dump="$WORK/$(basename "${FILE%.zst}")"
 zstd -dc "$FILE" > "$dump" || die "展開できませんでした"
 
 # 戻す先を作り直す (本番を指定したときだけ中身が置き換わる)
-psql -tAc "SELECT 1" >/dev/null 2>&1 || die "PostgreSQL に繋がりません"
+#
+# 繋がるかの確認は必ず接続先を指定する。指定しないと利用者名と同じ名前の
+# DB を探しに行き、それが無い環境では「繋がりません」と誤って言う
+# (実際に誤判定した)。postgres は必ずある DB なのでそこを見る。
+psql -d postgres -tAc "SELECT 1" >/dev/null 2>&1 || die "PostgreSQL に繋がりません"
 dropdb --if-exists "$TARGET" 2>/dev/null
 createdb "$TARGET" || die "$TARGET を作れませんでした"
 

@@ -49,7 +49,17 @@ say "できました: $name / $(numfmt --to=iec "$size" 2>/dev/null || echo "$si
 
 # 中身が読めるかを確かめてから上げる。壊れた控えは無いのと同じ
 zstd -t "$path" 2>>"$LOG" || die "圧縮ファイルが壊れています"
-zstd -dc "$path" | pg_restore --list >/dev/null 2>>"$LOG" || die "dump の中身を読めません"
+
+# pg_restore --list は目次だけ読んで先に閉じる。すると zstd 側が
+# 「書けない (Broken pipe)」で落ち、pipefail がそれを拾って
+# 「壊れている」と誤判定する (実際に誤判定した)。
+# ここで見たいのは pg_restore が目次を読めたかどうかだけなので、
+# この 1 行の間だけ pipefail を外し、pg_restore の結果で判断する。
+set +o pipefail
+zstd -dc "$path" 2>/dev/null | pg_restore --list >/dev/null 2>>"$LOG"
+toc_rc=$?
+set -o pipefail
+[ "$toc_rc" -eq 0 ] || die "dump の中身を読めません"
 say "中身を確認しました"
 
 # 無料枠から置ける世代数を決める
