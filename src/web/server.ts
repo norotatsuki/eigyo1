@@ -86,8 +86,25 @@ export function filterFromParams(q: URLSearchParams): SearchFilter {
   if (keyword) filter.keyword = keyword;
   const pref = list('pref');
   if (pref) filter.prefCodes = pref;
+  /*
+   * 市区町村は「県 2 桁 + 市 3 桁」の 5 桁で受ける。
+   *
+   * 3 桁だけで来たものは、県を跨いで混ざるため受け取らない (実測: コード
+   * 単体で引くと 37 県が混ざった)。県が 1 つだけ選ばれていれば、その県の
+   * ものと解釈して繋ぐ。県が無い/複数のときは、どの県か決められないので落とす。
+   */
   const city = list('city');
-  if (city) filter.cityCodes = city;
+  if (city) {
+    const keys = city.flatMap((v) => {
+      if (v.length === 5) return [v];
+      if (v.length === 3 && pref?.length === 1) return [`${pref[0]}${v}`];
+      return [];
+    });
+    // どの県か決められない指定は、黙って落とすと **絞り込み無し** に化けて
+    // 全件が返る。利用者は福知山市を見ているつもりで 500 万社を見ることになる。
+    // 決められないなら 0 件を返す。5 桁にならない値はここにしか現れない
+    filter.cityKeys = keys.length > 0 ? keys : ['-'];
+  }
   const kind = list('kind')?.map(Number).filter(Number.isFinite);
   if (kind?.length) filter.kinds = kind;
   const form = list('form');

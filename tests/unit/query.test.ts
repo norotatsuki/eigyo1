@@ -341,3 +341,55 @@ describe('内訳の切り口', () => {
     expect(slices[0]?.label).toBe('情報サービス業');
   });
 });
+
+/*
+ * 市区町村の絞り込み。
+ *
+ * 実測 (2026-08-13、本番 500 万社): 市区町村コード 360 個のうち 221 個 (61%)
+ * が複数の県で重なっていた。最大 44 県が同じコードを共有する。
+ * `city=201` だけで引くと、先頭 300 件に 37 県が混ざった。
+ */
+describe('市区町村の絞り込みは県と組で見る', () => {
+  function place(db: Db, number: string, prefCode: string, prefName: string, cityCode: string, cityName: string): void {
+    db.prepare(
+      `INSERT INTO corporations (
+         corporate_number, name, kind, pref_name, city_name, street_number,
+         pref_code, city_code, post_code, latest, search_excluded, assignment_date,
+         name_normalized, name_core, corp_form, address_full, is_active, source_date, ingested_at
+       ) VALUES (?, ?, 301, ?, ?, '', ?, ?, '', 1, 0, '2015-10-05', ?, ?, '株式会社', '', 1,
+                 '2026-07-31', 'now')`,
+    ).run(number, `株式会社${cityName}`, prefName, cityName, prefCode, cityCode, cityName, cityName);
+  }
+
+  let db: Db;
+  beforeEach(() => {
+    db = openDb(':memory:');
+    // 同じ市区町村コード 100 が、京都府と岡山県の両方にある
+    place(db, '1000000000001', '26', '京都府', '100', '京都市中京区');
+    place(db, '1000000000002', '33', '岡山県', '100', '岡山市北区');
+    place(db, '1000000000003', '26', '京都府', '201', '福知山市');
+    rebuildFts(db);
+  });
+
+  it('県と組の 5 桁で引けば、その県のものだけが返る', () => {
+    expect(countCompanies(db, { cityKeys: ['26100'] })).toBe(1);
+    const rows = searchCompanies(db, { cityKeys: ['26100'] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.pref_name).toBe('京都府');
+  });
+
+  it('別の県の同じコードは混ざらない', () => {
+    const rows = searchCompanies(db, { cityKeys: ['33100'] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.pref_name).toBe('岡山県');
+  });
+
+  it('同じ県の複数の市区町村をまとめて引ける', () => {
+    expect(countCompanies(db, { cityKeys: ['26100', '26201'] })).toBe(2);
+  });
+
+  it('県をまたいで選ぶこともできる (選んだ組だけが返る)', () => {
+    const rows = searchCompanies(db, { cityKeys: ['26100', '33100'] });
+    expect(rows.map((r) => r.pref_name).sort()).toEqual(['京都府', '岡山県']);
+  });
+});

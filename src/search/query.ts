@@ -19,7 +19,8 @@ export interface SearchFilter {
   /** 都道府県コード ('13' = 東京都) */
   prefCodes?: string[];
   /** 市区町村コード。prefCodes と併用する */
-  cityCodes?: string[];
+  /** 県と市区町村を繋いだ 5 桁 (例: 京都市中京区 = "26" + "100")。コード単体では県を跨ぐ */
+  cityKeys?: string[];
   /** 法人種別 (301 株式会社 / 302 有限会社 / 305 合同会社 / 399 その他の設立登記法人 …) */
   kinds?: number[];
   /** 法人格 ('株式会社' など) */
@@ -272,9 +273,22 @@ function buildWhere(filter: SearchFilter, forCount = false, indexHint = ''): Bui
     clauses.push(`c.pref_code IN (${placeholders(filter.prefCodes.length)})`);
     params.push(...filter.prefCodes);
   }
-  if (filter.cityCodes?.length) {
-    clauses.push(`c.city_code IN (${placeholders(filter.cityCodes.length)})`);
-    params.push(...filter.cityCodes);
+  /*
+   * 市区町村は **県と組** で絞る。コードだけでは足りない。
+   *
+   * 市区町村コードは都道府県ごとに振り直されている。実測 (2026-08-13):
+   *   コード 360 個のうち 221 個 (61%) が複数の県で重なっている。
+   *   最大 44 県が同じコードを共有し、重なるコードの下に 478 万社いる。
+   *   `city=201` だけで引くと、先頭 300 件に 37 県が混ざった。
+   *
+   * 内訳 (breakdown) は前から県と組で束ねていたのに、絞り込みだけが
+   * コード単体を見ていた。そのうえ内訳の id は 5 桁 (県 2 + 市 3)、
+   * 画面の印は 3 桁だったため、内訳の市区町村を押しても何も起きなかった。
+   * 両方を 5 桁に揃える。
+   */
+  if (filter.cityKeys?.length) {
+    clauses.push(`(c.pref_code || c.city_code) IN (${placeholders(filter.cityKeys.length)})`);
+    params.push(...filter.cityKeys);
   }
   if (filter.kinds?.length) {
     clauses.push(`c.kind IN (${placeholders(filter.kinds.length)})`);

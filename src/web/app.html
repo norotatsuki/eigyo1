@@ -795,7 +795,10 @@ async function refreshCities() {
 
   const cities = await (await fetch('/api/cities?pref=' + encodeURIComponent(prefs[0]))).json();
   if (mine !== cityGeneration) return; // 待っている間に県が変わっていたら捨てる
-  fillList('city', cities, 'code');
+  // 印の値は「県 + 市」の 5 桁にする。市のコードは県ごとに振り直されており、
+  // 3 桁だけでは 44 県まで重なる。内訳 (breakdown) の id も同じ 5 桁なので、
+  // 内訳の市区町村を押したときに、この印がそのまま見つかる
+  fillList('city', cities.map((c) => ({ ...c, key: prefs[0] + c.code })), 'key');
   $('cityNote').textContent = cities.length + ' 市区町村';
 }
 
