@@ -16,7 +16,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "better-sqlite3": "^11.7.0"
+    "better-sqlite3": "^11.7.0",
+    "pg": "^8.23.0",
+    "pg-copy-streams": "^7.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
