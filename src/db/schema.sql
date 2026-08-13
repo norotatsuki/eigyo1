@@ -167,6 +167,17 @@ CREATE INDEX IF NOT EXISTS idx_prof_reachable ON company_profiles(corporate_numb
   WHERE contact_email IS NOT NULL OR contact_form_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_prof_hiring   ON company_profiles(hiring);
 
+-- 「サイト有」「代表者有」も、送れる先と同じ形で引けるようにする。
+--
+-- 法人番号の順に並んだ部分索引があると、一覧はその順に読んで 500 件で
+-- 打ち切れる。無いと該当を全部集めてから並べ替えることになる。
+-- 実測 (2026-08-13、500 件を取るまで): サイト有 9.7s / 代表者有 5.0s。
+-- 送れる先だけが 0.09s だったのは、この形の索引があったため。
+CREATE INDEX IF NOT EXISTS idx_prof_site_cn ON company_profiles(corporate_number)
+  WHERE website_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_prof_repr_cn ON company_profiles(corporate_number)
+  WHERE representative IS NOT NULL;
+
 -- ---------------------------------------------------------------------------
 -- 発見したサイト
 --

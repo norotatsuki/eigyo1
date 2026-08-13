@@ -245,9 +245,12 @@
     <fieldset>
       <span class="lbl">並び順</span>
       <select id="order">
+        <option value="fastest" selected>最速（条件に合う並び）</option>
         <option value="name">商号順</option>
         <option value="assigned_desc">新しい順</option>
       </select>
+      <div class="note">「最速」は条件を見て索引の効く並びを選びます。商号順を選ぶと
+        条件によっては数秒〜十数秒かかります</div>
     </fieldset>
 
     <fieldset>
@@ -755,18 +758,26 @@ async function run() {
   $('elapsed').textContent = '検索中…';
   $('count').textContent = '…';
 
+  // 内訳は重い (絞り込みが緩いと 1 本で 2 分かかる)。開いた瞬間に 6 本
+  // 投げると、その間 一覧まで止まる。見たいと言われたときだけ数える
+  resetSegments();
+
+  /*
+   * 一覧を **先に** 取る。件数は後から。
+   *
+   * DB の呼び出しは同期で、サーバは 1 本の流れしか持たない。先に投げた方が
+   * 後の全部を塞ぐ。件数は条件が緩いと 18 秒かかることがあり (実測:
+   * 送れる先 18.0s / 年商帯 15.1s)、先に投げると一覧がその後ろで待つ。
+   * 一覧そのものは 0.06 秒で返るので、先に出して先に見せる。
+   */
+  if (await loadChunk(mine, true)) void loadAll(mine);
+
   fetch('/api/count?' + currentParams).then((r) => r.json()).then((data) => {
     if (mine !== generation) return;
     lastTotal = data.total;
     $('count').textContent = fmt(data.total);
     updateRange();
   });
-
-  // 内訳は重い (絞り込みが緩いと 1 本で 2 分かかる)。開いた瞬間に 6 本
-  // 投げると、その間 一覧まで止まる。見たいと言われたときだけ数える
-  resetSegments();
-
-  if (await loadChunk(mine, true)) void loadAll(mine);
 }
 
 function schedule() {

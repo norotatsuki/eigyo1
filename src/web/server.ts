@@ -161,7 +161,8 @@ export function filterFromParams(q: URLSearchParams): SearchFilter {
 function optionsFromParams(q: URLSearchParams): SearchOptions {
   const opts: SearchOptions = {};
   const order = q.get('order');
-  if (order === 'name' || order === 'assigned_desc' || order === 'capital_desc' || order === 'employees_desc') {
+  if (order === 'fastest' || order === 'name' || order === 'assigned_desc'
+      || order === 'capital_desc' || order === 'employees_desc') {
     opts.orderBy = order;
   }
   return opts;

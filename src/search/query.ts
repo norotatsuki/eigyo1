@@ -75,7 +75,11 @@ export interface SearchFilter {
 export interface SearchOptions {
   limit?: number;
   offset?: number;
-  orderBy?: 'name' | 'assigned_desc' | 'capital_desc' | 'employees_desc';
+  /**
+   * 並び。既定は 'fastest' — 絞り込みの中身を見て、索引が効く方の並びを選ぶ。
+   * 商号順が要るときだけ 'name' を明示する。
+   */
+  orderBy?: 'fastest' | 'name' | 'assigned_desc' | 'capital_desc' | 'employees_desc';
 }
 
 export interface CompanyRow {
@@ -162,8 +166,9 @@ const FROM_CORP_ONLY = fromCorpOnly();
  * 50 件そろうまでに数千行を見ることになる。そこは最適化器に任せた方が速い。
  */
 function listIndexHint(filter: SearchFilter, options: SearchOptions): string {
-  const orderBy = options.orderBy ?? 'name';
-  if (orderBy !== 'name') return '';
+  const orderBy = options.orderBy ?? 'fastest';
+  // fastest は付加情報で絞らないとき商号順になる。そのときは商号の索引が効く
+  if (orderBy !== 'name' && orderBy !== 'fastest') return '';
   if (filter.activeOnly === false) return '';
   if (usesProfile(filter)) return ''; // 付加情報側から回した方が速い
   if ((filter.keyword?.normalize('NFKC').trim().length ?? 0) >= 3) return ''; // 全文検索が駆動側
@@ -398,9 +403,31 @@ export function buildSelectSql(
 ): { sql: string; params: unknown[] } {
   const where = buildWhere(filter, false, listIndexHint(filter, options));
   return {
-    sql: `SELECT ${columns} ${where.from} ${where.sql} ${orderClause(options.orderBy)}`,
+    sql: `SELECT ${columns} ${where.from} ${where.sql} ${
+      (options.orderBy ?? 'fastest') === 'fastest' ? fastestOrder(filter) : orderClause(options.orderBy)
+    }`,
     params: where.params,
   };
+}
+
+/**
+ * 並べ替えの費用は、絞り込みの中身で逆転する。
+ *
+ * 実測 (2026-08-13、500 件を取るまで):
+ *
+ *              商号順    法人番号順
+ *   送れる先    0.78s      0.06s     ← 付加情報の索引から回せる
+ *   年商帯     10.31s      1.37s     ← 同上
+ *   県のみ      0.02s      8.61s     ← 商号の索引が県ごとに使える
+ *   語 建設     4.27s     44.85s     ← 全文検索が駆動側
+ *
+ * どちらか一方に決め打つと、必ずどちらかが極端に遅くなる。
+ * 付加情報で絞るときは法人番号順、それ以外は商号順を選ぶ。
+ * どちらも決まった並びなので、続きを読み足しても行がずれない
+ * (並べ替えを外すと最速だが、読み足しで重複や取りこぼしが起きうる)。
+ */
+function fastestOrder(filter: SearchFilter): string {
+  return usesProfile(filter) ? 'ORDER BY c.corporate_number' : 'ORDER BY c.name_core';
 }
 
 function orderClause(orderBy: SearchOptions['orderBy']): string {
