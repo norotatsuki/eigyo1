@@ -49,13 +49,25 @@ Compute → Instances → Create instance
 | Boot volume | 100〜200GB |
 | SSH key | 手元の公開鍵を貼る |
 
+**同じ画面で、Show advanced options → Management → Initialization script に
+`scripts/cloud/cloud-init.yaml` の中身をそのまま貼る。** これで最初の起動時に
+PostgreSQL の導入から表と索引の作成まで済んだ状態で立ち上がる。
+
 作った後、Networking → Security List で **22/80/443 だけ**開ける。
 **5432 は開けない** (PostgreSQL は VM の中からしか触らせない)。
 
-### 2. サーバーを仕立てる (自動)
+### 2. サーバーを仕立てる
+
+cloud-init を貼っていれば **何もしなくてよい**。進み具合は:
 
 ```bash
 ssh ubuntu@<VMのIP>
+sudo tail -f /var/log/eigyo1-setup.log     # 終わると /opt/eigyo1/.provisioned ができる
+```
+
+貼り忘れた / 後から作り直すときは、同じ内容を手で流せる:
+
+```bash
 git clone https://github.com/norotatsuki/eigyo1.git /opt/eigyo1
 cd /opt/eigyo1 && bash scripts/cloud/provision.sh
 ```

@@ -1,0 +1,115 @@
+#cloud-config
+# Oracle Cloud の VM 作成画面で、そのまま貼る起動スクリプト。
+#
+#   Create instance → Show advanced options → Management →
+#   Initialization script → 「Paste cloud-init script」にこの内容を貼る
+#
+# 貼っておくと、VM が最初に起動した時点で次までが済んだ状態になる:
+#   ・時刻を日本時間に
+#   ・PostgreSQL の導入・調整・自動起動
+#   ・DB と利用者の作成 (合言葉は自動生成し .env にだけ書く)
+#   ・スワップ 4GB
+#   ・ファイアウォール (22/80/443 のみ。5432 は開けない)
+#   ・アプリの取得と依存の導入
+#   ・スキーマと索引の適用
+#
+# 残るのは「データを入れる」だけになる。
+#
+# 進み具合:  sudo tail -f /var/log/eigyo1-setup.log
+# 終わった印: /opt/eigyo1/.provisioned
+package_update: true
+packages:
+  - postgresql
+  - postgresql-contrib
+  - zstd
+  - git
+  - curl
+  - jq
+  - ufw
+
+write_files:
+  - path: /usr/local/bin/eigyo1-setup.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      exec >> /var/log/eigyo1-setup.log 2>&1
+      echo "=== $(date) 仕立てを始めます ==="
+
+      timedatectl set-timezone Asia/Tokyo
+
+      # Node.js 22
+      if ! command -v node >/dev/null 2>&1; then
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+        apt-get install -y nodejs
+      fi
+
+      # スワップ (12GB の機体でも収集中に振り切れることがある)
+      if [ ! -f /swapfile ]; then
+        fallocate -l 4G /swapfile && chmod 600 /swapfile
+        mkswap /swapfile && swapon /swapfile
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      fi
+
+      # PostgreSQL は localhost だけで待ち受ける。5432 は外に出さない
+      PGVER=$(ls /etc/postgresql | sort -n | tail -1)
+      PGCONF=/etc/postgresql/$PGVER/main
+      sed -i "s/^#\?listen_addresses.*/listen_addresses = 'localhost'/" "$PGCONF/postgresql.conf"
+      mkdir -p "$PGCONF/conf.d"
+      grep -q "conf.d" "$PGCONF/postgresql.conf" || echo "include_dir = 'conf.d'" >> "$PGCONF/postgresql.conf"
+      cat > "$PGCONF/conf.d/eigyo.conf" <<'CONF'
+      # 12GB RAM / 2 vCPU 向け。既定のままだと 581 万行の検索で毎回ディスクを読み直す
+      shared_buffers = 3GB
+      effective_cache_size = 8GB
+      work_mem = 32MB
+      maintenance_work_mem = 512MB
+      random_page_cost = 1.1
+      effective_io_concurrency = 200
+      max_parallel_workers_per_gather = 2
+      jit = off
+      timezone = 'Asia/Tokyo'
+      log_min_duration_statement = 3000
+      CONF
+      systemctl enable --now postgresql
+      systemctl restart postgresql
+
+      # DB と利用者
+      DB_PASS=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)
+      sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='eigyo'" | grep -q 1 \
+        || sudo -u postgres psql -c "CREATE ROLE eigyo LOGIN PASSWORD '$DB_PASS';"
+      sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='eigyo'" | grep -q 1 \
+        || sudo -u postgres createdb -O eigyo eigyo
+      sudo -u postgres psql -d eigyo -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+
+      # アプリ
+      if [ ! -d /opt/eigyo1/.git ]; then
+        git clone --depth 1 https://github.com/norotatsuki/eigyo1.git /opt/eigyo1
+      fi
+      cd /opt/eigyo1
+      npm install --omit=dev
+
+      # 接続情報は .env にだけ書く (画面にもログにも出さない)
+      if [ ! -f /opt/eigyo1/.env ]; then
+        printf 'DATABASE_URL=postgres://eigyo:%s@localhost:5432/eigyo\n' "$DB_PASS" > /opt/eigyo1/.env
+        chmod 600 /opt/eigyo1/.env
+      fi
+
+      # 表と索引を用意する (データはまだ空)
+      set -a; . /opt/eigyo1/.env; set +a
+      psql "$DATABASE_URL" -f /opt/eigyo1/src/db/schema.pg.sql
+      psql "$DATABASE_URL" -f /opt/eigyo1/src/db/indexes.pg.sql
+
+      # 開けるのは 22/80/443 だけ
+      ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp
+      ufw --force enable
+
+      touch /opt/eigyo1/.provisioned
+      echo "=== $(date) 仕立てを終えました ==="
+      echo "残りはデータを入れるだけです:"
+      echo "  scp eigyo-pg.dump.zst ubuntu@<このVM>:/tmp/"
+      echo "  cd /opt/eigyo1 && bash scripts/cloud/restore.sh --file /tmp/eigyo-pg.dump.zst --into eigyo"
+
+runcmd:
+  - [ bash, /usr/local/bin/eigyo1-setup.sh ]
+
+final_message: "営業リストのサーバーの仕立てが終わりました ($UPTIME 秒)。/var/log/eigyo1-setup.log を見てください"
